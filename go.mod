@@ -42,7 +42,12 @@ require (
 	github.com/prometheus/client_golang v1.11.0
 	github.com/rs/zerolog v1.23.0
 	github.com/scylladb/go-set v1.0.2
+<<<<<<< HEAD
 	github.com/shopspring/decimal v1.2.0
+=======
+	github.com/sercand/kuberesolver/v3 v3.1.0
+	github.com/shopspring/decimal v1.3.1
+>>>>>>> 2610d945 (use consistent-hash load balancer with kubernetes endpoint resolver for)
 	github.com/spf13/cobra v1.2.1
 	github.com/stretchr/testify v1.7.0
 	go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc v0.22.0
