@@ -62,5 +62,9 @@ require (
 	google.golang.org/protobuf v1.27.1
 	gopkg.in/yaml.v2 v2.4.0
 	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b
+<<<<<<< HEAD
 	gotest.tools v2.2.0+incompatible // indirect
+=======
+	mvdan.cc/gofumpt v0.3.0
+>>>>>>> c45995e4 (bump gofumpt to 1.3.0 and fix new formatting issues)
 )
