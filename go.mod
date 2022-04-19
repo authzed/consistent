@@ -3,6 +3,7 @@ module github.com/authzed/spicedb
 go 1.16
 
 require (
+<<<<<<< HEAD
 	github.com/Azure/go-ansiterm v0.0.0-20170929234023-d6e3b3328b78 // indirect
 	github.com/Masterminds/squirrel v1.5.0
 	github.com/Microsoft/go-winio v0.4.16 // indirect
@@ -13,6 +14,20 @@ require (
 	github.com/cespare/xxhash v1.1.0
 	github.com/cockroachdb/cockroach v20.1.15+incompatible
 	github.com/containerd/continuity v0.0.0-20210315143101-93e15499afd5 // indirect
+=======
+	cloud.google.com/go/spanner v1.30.1
+	github.com/Masterminds/squirrel v1.5.2
+	github.com/authzed/authzed-go v0.5.1-0.20220303182356-243e79ca06fa
+	github.com/authzed/grpcutil v0.0.0-20220104222419-f813f77722e5
+	github.com/aws/aws-sdk-go v1.43.31
+	github.com/benbjohnson/clock v1.3.0
+	github.com/cenkalti/backoff/v4 v4.1.3
+	github.com/cespare/xxhash/v2 v2.1.2
+	github.com/cncf/udpa/go v0.0.0-20220112060539-c52dc94e7fbe // indirect
+	github.com/cncf/xds/go v0.0.0-20220330162227-eded343319d0 // indirect
+	github.com/dalzilio/rudd v1.1.0
+	github.com/dave/jennifer v1.5.0 // indirect
+>>>>>>> 09ea166b (gomod: bump xxhash to v2)
 	github.com/dgraph-io/ristretto v0.1.0
 	github.com/docker/go-connections v0.4.0 // indirect
 	github.com/docker/go-units v0.4.0 // indirect
