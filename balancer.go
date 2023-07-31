@@ -43,35 +43,33 @@ const (
 	defaultSpread            = 1
 )
 
-var defaultBalancerServiceConfig = &ConsistentHashringBalancerConfig{
+var defaultBalancerServiceConfig = &BalancerConfig{
 	ReplicationFactor: defaultReplicationFactor,
 	Spread:            defaultSpread,
 }
 
 // DefaultBalancerServiceConfigJSON is a grpc Service Config JSON with the
 // defaults for the ConsstentHashringBalancer configured.
-var DefaultBalancerServiceConfigJSON = defaultBalancerServiceConfig.MustToServiceConfigJSON()
+var DefaultBalancerServiceConfigJSON = defaultBalancerServiceConfig.MustServiceConfigJSON()
 
-// ConsistentHashringBalancerConfig supports common settings for the balancer.
-// It should be converted to json with ToServiceConfigJSON or
-// MustToServiceConfigJSON and passed to the grpc.WithDefaultServiceConfig
-// option on grpc.Dial.
-type ConsistentHashringBalancerConfig struct {
+// BalancerConfig exposes the configurable aspects of the balancer.
+//
+// The intention of this type is to be used with `grpc.WithDefaultServiceConfig`
+// through the `ServiceConfigJSON` or `MustServiceConfigJSON` methods.
+type BalancerConfig struct {
 	serviceconfig.LoadBalancingConfig `json:"-"`
 	ReplicationFactor                 uint16 `json:"replicationFactor,omitempty"`
 	Spread                            uint8  `json:"spread,omitempty"`
 }
 
-// ToServiceConfigJSON converts the config into the standard grpc Service Config
+// ServiceConfigJSON converts the config into the standard grpc Service Config
 // json format.
-func (c *ConsistentHashringBalancerConfig) ToServiceConfigJSON() (string, error) {
+func (c *BalancerConfig) ServiceConfigJSON() (string, error) {
 	type wrapper struct {
-		Config []map[string]*ConsistentHashringBalancerConfig `json:"loadBalancingConfig"`
+		Config []map[string]*BalancerConfig `json:"loadBalancingConfig"`
 	}
 
-	out := wrapper{Config: []map[string]*ConsistentHashringBalancerConfig{{
-		BalancerName: c,
-	}}}
+	out := wrapper{Config: []map[string]*BalancerConfig{{BalancerName: c}}}
 
 	j, err := json.Marshal(out)
 	if err != nil {
@@ -81,10 +79,10 @@ func (c *ConsistentHashringBalancerConfig) ToServiceConfigJSON() (string, error)
 	return string(j), nil
 }
 
-// MustToServiceConfigJSON calls ToServiceConfigJSON but panics if there is an
+// MustServiceConfigJSON calls ServiceConfigJSON, but panics if there is an
 // error.
-func (c *ConsistentHashringBalancerConfig) MustToServiceConfigJSON() string {
-	o, err := c.ToServiceConfigJSON()
+func (c *BalancerConfig) MustServiceConfigJSON() string {
+	o, err := c.ServiceConfigJSON()
 	if err != nil {
 		panic(err)
 	}
@@ -123,7 +121,7 @@ var _ hashring.Member = &subConnMember{}
 type ConsistentHashringBuilder struct {
 	sync.Mutex
 	hasher hashring.HasherFunc
-	config ConsistentHashringBalancerConfig
+	config BalancerConfig
 }
 
 // Build satisfies balancer.Builder and returns a new ConsistentHashringBalancer.
@@ -151,7 +149,7 @@ func (b *ConsistentHashringBuilder) Name() string {
 // Service Config json. The results are stored on the builder so that
 // subsequently built Balancers use the config.
 func (b *ConsistentHashringBuilder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalancingConfig, error) {
-	var lbCfg ConsistentHashringBalancerConfig
+	var lbCfg BalancerConfig
 	if err := json.Unmarshal(js, &lbCfg); err != nil {
 		return nil, fmt.Errorf("wrr: unable to unmarshal LB policy config: %s, error: %w", string(js), err)
 	}
@@ -183,7 +181,7 @@ type ConsistentHashringBalancer struct {
 	subConns *resolver.AddressMap
 	scStates map[balancer.SubConn]connectivity.State
 
-	config   *ConsistentHashringBalancerConfig
+	config   *BalancerConfig
 	hashring *hashring.Hashring
 	hasher   hashring.HasherFunc
 
@@ -225,7 +223,7 @@ func (b *ConsistentHashringBalancer) UpdateClientConnState(s balancer.ClientConn
 
 	// update the service config if it has changed
 	if s.BalancerConfig != nil {
-		svcConfig := s.BalancerConfig.(*ConsistentHashringBalancerConfig)
+		svcConfig := s.BalancerConfig.(*BalancerConfig)
 		if b.config == nil || svcConfig.ReplicationFactor != b.config.ReplicationFactor {
 			b.hashring = hashring.MustNewHashring(b.hasher, svcConfig.ReplicationFactor)
 			b.config = svcConfig

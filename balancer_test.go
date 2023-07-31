@@ -100,7 +100,7 @@ func TestConsistentHashringPickerPick(t *testing.T) {
 	}
 }
 
-func TestConsistentHashringBalancerConfigToServiceConfigJSON(t *testing.T) {
+func TestConsistentHashringBalancerConfigServiceConfigJSON(t *testing.T) {
 	tests := []struct {
 		name              string
 		replicationFactor uint16
@@ -126,12 +126,12 @@ func TestConsistentHashringBalancerConfigToServiceConfigJSON(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			c := &ConsistentHashringBalancerConfig{
+			c := &BalancerConfig{
 				ReplicationFactor: tt.replicationFactor,
 				Spread:            tt.spread,
 			}
 
-			got, err := c.ToServiceConfigJSON()
+			got, err := c.ServiceConfigJSON()
 			require.NoError(t, err)
 			require.Equal(t, tt.want, got)
 		})
@@ -164,7 +164,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			name: "configures hashring, no addresses",
 			s: []balancer.ClientConnState{{
 				ResolverState: resolver.State{},
-				BalancerConfig: &ConsistentHashringBalancerConfig{
+				BalancerConfig: &BalancerConfig{
 					ReplicationFactor: 100,
 					Spread:            1,
 				},
@@ -188,7 +188,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 						{ServerName: "t", Addr: "3"},
 					},
 				},
-				BalancerConfig: &ConsistentHashringBalancerConfig{
+				BalancerConfig: &BalancerConfig{
 					ReplicationFactor: 100,
 					Spread:            1,
 				},
@@ -213,7 +213,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 						{ServerName: "t", Addr: "3"},
 					},
 				},
-				BalancerConfig: &ConsistentHashringBalancerConfig{
+				BalancerConfig: &BalancerConfig{
 					ReplicationFactor: 100,
 					Spread:            1,
 				},
@@ -251,7 +251,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 						{ServerName: "t", Addr: "3"},
 					},
 				},
-				BalancerConfig: &ConsistentHashringBalancerConfig{
+				BalancerConfig: &BalancerConfig{
 					ReplicationFactor: 100,
 					Spread:            1,
 				},
@@ -291,7 +291,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 						{ServerName: "t", Addr: "3"},
 					},
 				},
-				BalancerConfig: &ConsistentHashringBalancerConfig{
+				BalancerConfig: &BalancerConfig{
 					ReplicationFactor: 100,
 					Spread:            1,
 				},
