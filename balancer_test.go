@@ -102,7 +102,7 @@ func TestConsistentHashringPickerPick(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &picker{
-				hashring: hashring.MustNewHashring(xxhash.Sum64, tt.rf),
+				hashring: hashring.MustNew(xxhash.Sum64, tt.rf),
 				spread:   tt.spread,
 			}
 			require.NoError(t, p.hashring.Add(subConnMember{key: "1", SubConn: &fakeSubConn{id: "1"}}))

@@ -1,5 +1,8 @@
-// Package hashring implements a general purpose consistent hashring with a
-// pluggable hash algorithm.
+// Package hashring implements a thread-safe consistent hashring with a
+// pluggable hashing algorithm.
+//
+// This package was developed for use in a gRPC balancer, but nothing precludes
+// it from being used for any other purpose.
 package hashring
 
 import (
@@ -22,19 +25,20 @@ var (
 	ErrUnexpectedVnodeCount     = errors.New("found a different number of vnodes than replication factor")
 )
 
-// HasherFunc is the interface for any function that can act as a hasher.
-type HasherFunc func([]byte) uint64
+// HashFunc is the signature for any hashing function that can be leveraged by
+// the hashring.
+type HashFunc func([]byte) uint64
 
-// Member is the interface for any object that can be stored and retrieved as a
-// Hashring member (e.g. node/backend).
+// Member represents a participating member of the hashring.
+// In most use cases, you can think of a member as a node or backend.
 type Member interface {
 	Key() string
 }
 
-// Hashring provides a ring consistent hash implementation using a configurable number of virtual
-// nodes. It is internally synchronized and thread-safe.
-type Hashring struct {
-	hasher            HasherFunc
+// Ring provides a thread-safe consistent hashring implementation with a
+// configurable number of virtual nodes.
+type Ring struct {
+	hashfn            HashFunc
 	replicationFactor uint16
 
 	sync.RWMutex
@@ -42,11 +46,12 @@ type Hashring struct {
 	virtualNodes []virtualNode
 }
 
-// MustNewHashring creates a new Hashring with the specified hasher function and replicationFactor.
+// MustNew creates a new Hashring with the specified hasher function and
+// replication factor.
 //
-// replicationFactor must be >= 1 or this method will panic.
-func MustNewHashring(hasher HasherFunc, replicationFactor uint16) *Hashring {
-	hr, err := NewHashring(hasher, replicationFactor)
+// If the provided replication factor is less than 1, this function will panic.
+func MustNew(hasher HashFunc, replicationFactor uint16) *Ring {
+	hr, err := New(hasher, replicationFactor)
 	if err != nil {
 		panic(err)
 	}
@@ -54,48 +59,44 @@ func MustNewHashring(hasher HasherFunc, replicationFactor uint16) *Hashring {
 	return hr
 }
 
-// NewHashring creates a new Hashring with the specified hasher function and replicationFactor.
+// New allocates a Ring with the specified hash function and replication factor.
 //
-// replicationFactor must be > 0 and should be a number like 20 for higher quality key distribution.
-// At a replicationFactor of 100, the standard distribution of key->member mapping will be about 10%
-// of the mean. At a replicationFactor of 1000 it will be about 3.2%. The replicationFactor should
-// be chosen carefully because a higher replicationFactor will require more memory and worse member
-// selection performance.
-func NewHashring(hasher HasherFunc, replicationFactor uint16) (*Hashring, error) {
+// The replication factor must be greater than 0 and ideally be at least 20 or
+// higher for quality key distribution. At 100, the standard distribution of
+// key->member mapping will be about 10% of the mean. At 1000, it will be about
+// 3.2%. This value should be chosen very carefully because a higher value will
+// require more memory and decrease member selection performance.
+func New(hashfn HashFunc, replicationFactor uint16) (*Ring, error) {
 	if replicationFactor < 1 {
 		return nil, ErrInvalidReplicationFactor
 	}
 
-	return &Hashring{
-		hasher:            hasher,
+	return &Ring{
+		hashfn:            hashfn,
 		replicationFactor: replicationFactor,
 		nodes:             map[string]nodeRecord{},
 	}, nil
 }
 
-// Add adds an object that implements the Member interface as a node in the
-// consistent hashring.
+// Add inserts a member into the hashring.
 //
 // If a member with the same key is already in the hashring,
 // ErrMemberAlreadyExists is returned.
-func (h *Hashring) Add(member Member) error {
+func (h *Ring) Add(member Member) error {
 	nodeKeyString := member.Key()
-
-	h.Lock()
-	defer h.Unlock()
-
-	if _, ok := h.nodes[nodeKeyString]; ok {
-		// already have node, bail
-		return ErrMemberAlreadyExists
-	}
-
-	nodeHash := h.hasher([]byte(nodeKeyString))
-
+	nodeHash := h.hashfn([]byte(nodeKeyString))
 	newNodeRecord := nodeRecord{
 		nodeHash,
 		nodeKeyString,
 		member,
 		nil,
+	}
+
+	h.Lock()
+	defer h.Unlock()
+
+	if _, ok := h.nodes[nodeKeyString]; ok {
+		return ErrMemberAlreadyExists
 	}
 
 	// virtualNodeBuffer is a 10-byte array, where 8 bytes are the hash value of
@@ -106,7 +107,7 @@ func (h *Hashring) Add(member Member) error {
 
 	for i := uint16(0); i < h.replicationFactor; i++ {
 		binary.LittleEndian.PutUint16(virtualNodeBuffer[8:], i)
-		virtualNodeHash := h.hasher(virtualNodeBuffer)
+		virtualNodeHash := h.hashfn(virtualNodeBuffer)
 
 		virtualNode := virtualNode{
 			virtualNodeHash,
@@ -125,10 +126,10 @@ func (h *Hashring) Add(member Member) error {
 	return nil
 }
 
-// Remove removes an object with the same key as the specified member object.
+// Remove finds and removes the specified member from the hashring.
 //
-// If no member with the same key is in the hashring, ErrMemberNotFound is returned.
-func (h *Hashring) Remove(member Member) error {
+// If no member can be found, ErrMemberNotFound is returned.
+func (h *Ring) Remove(member Member) error {
 	nodeKeyString := member.Key()
 
 	h.Lock()
@@ -136,7 +137,6 @@ func (h *Hashring) Remove(member Member) error {
 
 	foundNode, ok := h.nodes[nodeKeyString]
 	if !ok {
-		// don't have the node, bail
 		return ErrMemberNotFound
 	}
 
@@ -183,11 +183,11 @@ func (h *Hashring) Remove(member Member) error {
 	return nil
 }
 
-// FindN finds the first N members in the hashring after the specified key.
+// FindN finds the first N members after the specified key.
 //
-// If there are not enough members in the hashring to satisfy the request,
-// ErrNotEnoughMembers is returned.
-func (h *Hashring) FindN(key []byte, num uint8) ([]Member, error) {
+// If there are not enough members to satisfy the request, ErrNotEnoughMembers
+// is returned.
+func (h *Ring) FindN(key []byte, num uint8) ([]Member, error) {
 	h.RLock()
 	defer h.RUnlock()
 
@@ -195,7 +195,7 @@ func (h *Hashring) FindN(key []byte, num uint8) ([]Member, error) {
 		return nil, ErrNotEnoughMembers
 	}
 
-	keyHash := h.hasher(key)
+	keyHash := h.hashfn(key)
 
 	vnodeIndex := sort.Search(len(h.virtualNodes), func(i int) bool {
 		return h.virtualNodes[i].hashvalue >= keyHash
@@ -215,8 +215,8 @@ func (h *Hashring) FindN(key []byte, num uint8) ([]Member, error) {
 	return foundNodes, nil
 }
 
-// Members returns the current list of members of the Hashring.
-func (h *Hashring) Members() []Member {
+// Members enumerates the full set of hashring members.
+func (h *Ring) Members() []Member {
 	h.RLock()
 	defer h.RUnlock()
 

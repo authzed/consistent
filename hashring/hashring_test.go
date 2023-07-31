@@ -37,10 +37,10 @@ func TestHashring(t *testing.T) {
 	for _, tc := range testCases {
 		tc := tc
 		t.Run(strconv.Itoa(int(tc.replicationFactor)), func(t *testing.T) {
-			ring, err := NewHashring(xxhash.Sum64, tc.replicationFactor)
+			ring, err := New(xxhash.Sum64, tc.replicationFactor)
 			require.NoError(t, err)
 
-			require.NotNil(t, ring.hasher)
+			require.NotNil(t, ring.hashfn)
 			require.Equal(t, tc.replicationFactor, ring.replicationFactor)
 			require.Len(t, ring.virtualNodes, 0)
 			require.Len(t, ring.nodes, 0)
@@ -86,7 +86,7 @@ func TestHashring(t *testing.T) {
 			}
 
 			// Build a consistent hash that adds the nodes in reverse order
-			reverseRing, err := NewHashring(xxhash.Sum64, tc.replicationFactor)
+			reverseRing, err := New(xxhash.Sum64, tc.replicationFactor)
 			require.NoError(t, err)
 
 			for i := 0; i < len(tc.nodes); i++ {
@@ -142,7 +142,7 @@ func TestBackendBalance(t *testing.T) {
 		t.Run(strconv.Itoa(numMembers), func(t *testing.T) {
 			t.Parallel()
 
-			ring, err := NewHashring(hasherFunc, 100)
+			ring, err := New(hasherFunc, 100)
 			require.NoError(t, err)
 
 			memberKeyCount := map[member]int{}
@@ -192,7 +192,7 @@ const (
 // it returns the mapping from before the ring was changed, the way the ring was
 // modified (add/remove/identity), and the member that was affected
 // (added, removed, or none)
-func perturb(tb testing.TB, ring *Hashring, spread uint8,
+func perturb(tb testing.TB, ring *Ring, spread uint8,
 	numTestKeys int) (before map[string][]Member,
 	perturbation perturbationKind, affectedMember member,
 ) {
@@ -230,7 +230,7 @@ func perturb(tb testing.TB, ring *Hashring, spread uint8,
 // verify takes a ring, a change that has already been applied to the ring
 // (add/remove node) and the state of the ring before the change happened, and
 // asserts that the keys were remapped correctly.
-func verify(tb testing.TB, ring *Hashring,
+func verify(tb testing.TB, ring *Ring,
 	before map[string][]Member, perturbation perturbationKind,
 	affectedMember member, spread uint8, numTestKeys int,
 ) {
@@ -273,7 +273,7 @@ func verify(tb testing.TB, ring *Hashring,
 }
 
 func TestConsistency(t *testing.T) {
-	ring, err := NewHashring(xxhash.Sum64, 100)
+	ring, err := New(xxhash.Sum64, 100)
 	require.NoError(t, err)
 
 	for memberNum := 0; memberNum < 5; memberNum++ {
@@ -292,7 +292,7 @@ func BenchmarkRemapping(b *testing.B) {
 	numKeys := 1000
 	numMembers := 5
 
-	ring, err := NewHashring(xxhash.Sum64, 100)
+	ring, err := New(xxhash.Sum64, 100)
 	require.NoError(b, err)
 
 	for memberNum := 0; memberNum < numMembers; memberNum++ {

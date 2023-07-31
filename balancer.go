@@ -112,8 +112,8 @@ var logger = grpclog.Component("consistenthashring")
 // ```go
 // balancer.Register(consistent.NewBuilder(xxhash.Sum64))
 // ```
-func NewBuilder(hashfn hashring.HasherFunc) Builder {
-	return &builder{hasher: hashfn}
+func NewBuilder(hashfn hashring.HashFunc) Builder {
+	return &builder{hashfn: hashfn}
 }
 
 type subConnMember struct {
@@ -129,7 +129,7 @@ var _ hashring.Member = (*subConnMember)(nil)
 
 type builder struct {
 	sync.Mutex
-	hasher hashring.HasherFunc
+	hashfn hashring.HashFunc
 	config BalancerConfig
 }
 
@@ -151,7 +151,7 @@ func (b *builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balance
 		scStates: make(map[balancer.SubConn]connectivity.State),
 		csEvltr:  &balancer.ConnectivityStateEvaluator{},
 		state:    connectivity.Connecting,
-		hasher:   b.hasher,
+		hasher:   b.hashfn,
 		picker:   base.NewErrPicker(balancer.ErrNoSubConnAvailable),
 	}
 
@@ -190,8 +190,8 @@ type ringBalancer struct {
 	scStates map[balancer.SubConn]connectivity.State
 
 	config   *BalancerConfig
-	hashring *hashring.Hashring
-	hasher   hashring.HasherFunc
+	hashring *hashring.Ring
+	hasher   hashring.HashFunc
 
 	resolverErr error // the last error reported by the resolver; cleared on successful resolution
 	connErr     error // the last connection error; cleared upon leaving TransientFailure
@@ -234,7 +234,7 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 	if s.BalancerConfig != nil {
 		svcConfig := s.BalancerConfig.(*BalancerConfig)
 		if b.config == nil || svcConfig.ReplicationFactor != b.config.ReplicationFactor {
-			b.hashring = hashring.MustNewHashring(b.hasher, svcConfig.ReplicationFactor)
+			b.hashring = hashring.MustNew(b.hasher, svcConfig.ReplicationFactor)
 			b.config = svcConfig
 		}
 	}
@@ -384,7 +384,7 @@ func (b *ringBalancer) Close() {
 }
 
 type picker struct {
-	hashring *hashring.Hashring
+	hashring *hashring.Ring
 	spread   uint8
 }
 
