@@ -20,8 +20,7 @@ balancer.Register(consistent.NewBuilder(xxhash.Sum64))
 
 ```go
 // This is using the defaults, but you can create your own config.
-svcConfig := consistent.DefaultBalancerConfig.MustServiceJSON()
-grpc.Dial(addr, grpc.WithDefaultServiceConfig(svcConfig))
+grpc.Dial(addr, grpc.WithDefaultServiceConfig(consistent.DefaultServiceConfigJSON))
 ```
 
 ## Acknowledgements

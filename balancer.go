@@ -41,16 +41,26 @@ const (
 	//
 	// The value stored at this key must be []byte.
 	CtxKey ctxKey = "requestKey"
+
+	// DefaultReplicationFactor is the value that will be used when parsing a
+	// service config provides an invalid value.
+	DefaultReplicationFactor = 100
+
+	// DefaultSpread is the value that will be used when parsing a service
+	// config provides an invalid value.
+	DefaultSpread = 1
 )
 
-// DefaultBalancerConfig provides fallback values when balancers parse invalid
-// configuration JSON.
+// DefaultServiceConfigJSON is a helper to easily leverage the defaults.
 //
-// Modifying this variable will change the behavior of all allocated balancers.
-var DefaultBalancerConfig = &BalancerConfig{
-	ReplicationFactor: 100,
-	Spread:            1,
-}
+// Here's an example:
+// ```go
+// grpc.Dial(addr, grpc.WithDefaultServiceConfig(consistent.DefaultServiceConfigJSON))
+// ```
+var DefaultServiceConfigJSON = (&BalancerConfig{
+	ReplicationFactor: DefaultReplicationFactor,
+	Spread:            DefaultSpread,
+}).MustServiceConfigJSON()
 
 // BalancerConfig exposes the configurable aspects of the balancer.
 //
@@ -157,11 +167,11 @@ func (b *builder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalancingCo
 	logger.Infof("parsed balancer config %s", js)
 
 	if lbCfg.ReplicationFactor == 0 {
-		lbCfg.ReplicationFactor = DefaultBalancerConfig.ReplicationFactor
+		lbCfg.ReplicationFactor = DefaultReplicationFactor
 	}
 
 	if lbCfg.Spread == 0 {
-		lbCfg.Spread = DefaultBalancerConfig.Spread
+		lbCfg.Spread = DefaultSpread
 	}
 
 	b.Lock()
