@@ -15,9 +15,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/rand"
+	"hash/maphash"
 	"sync"
-	"time"
 
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/balancer/base"
@@ -312,7 +311,6 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 		b.picker = &picker{
 			hashring: b.hashring,
 			spread:   b.config.Spread,
-			rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
 		}
 	}
 
@@ -376,10 +374,8 @@ func (b *ringBalancer) Close() {
 }
 
 type picker struct {
-	sync.Mutex
 	hashring *hashring.Hashring
 	spread   uint8
-	rand     *rand.Rand
 }
 
 var _ balancer.Picker = (*picker)(nil)
@@ -406,16 +402,24 @@ func (p *picker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
 	}
 
 	index := 0
-
 	if p.spread > 1 {
-		// TODO: should look into other options for this to avoid locking; we mostly use spread 1 so it's not urgent
-		// rand is not safe for concurrent use
-		p.Lock()
-		index = p.rand.Intn(int(p.spread))
-		p.Unlock()
+		index = intn(p.spread)
 	}
 
 	chosen := members[index].(subConnMember)
 
 	return balancer.PickResult{SubConn: chosen.SubConn}, nil
+}
+
+// intn returns, as an int, a non-negative pseudo-random number in the
+// half-open interval [0,n).
+//
+// Under the hood, it's taking advantage of maphash's use of runtime.fastrand
+// for an extremely fast, thread-safe PRNG.
+var intn = func(n uint8) int {
+	out := int(new(maphash.Hash).Sum64())
+	if out < 0 {
+		out = -out
+	}
+	return out % int(n)
 }

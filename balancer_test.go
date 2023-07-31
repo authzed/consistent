@@ -4,9 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"math/rand"
+	"hash/maphash"
+	"reflect"
 	"sync"
 	"testing"
+	"unsafe"
 
 	"github.com/cespare/xxhash/v2"
 	"github.com/stretchr/testify/require"
@@ -36,8 +38,23 @@ func keys(members []hashring.Member) []string {
 // Note: this is testing picker behavior and not the hashring
 // behavior itself, see `pkg/consistent` for tests of the hashring.
 func TestConsistentHashringPickerPick(t *testing.T) {
-	// pin random source so that tests are consistent
-	rnd := rand.New(rand.NewSource(1))
+	// Override the intn function with one that uses a stable seed.
+	intn = func(n uint8) int {
+		h := new(maphash.Hash)
+
+		// This hack sets an unexported field using reflection.
+		var seed maphash.Seed
+		field := reflect.ValueOf(&seed).Elem().Field(0)
+		unsafeField := reflect.NewAt(field.Type(), unsafe.Pointer(field.UnsafeAddr())).Elem()
+		unsafeField.SetUint(uint64(1))
+		h.SetSeed(seed)
+
+		out := int(h.Sum64())
+		if out < 0 {
+			out = -out
+		}
+		return out % int(n)
+	}
 
 	tests := []struct {
 		name   string
@@ -87,7 +104,6 @@ func TestConsistentHashringPickerPick(t *testing.T) {
 			p := &picker{
 				hashring: hashring.MustNewHashring(xxhash.Sum64, tt.rf),
 				spread:   tt.spread,
-				rand:     rnd,
 			}
 			require.NoError(t, p.hashring.Add(subConnMember{key: "1", SubConn: &fakeSubConn{id: "1"}}))
 			require.NoError(t, p.hashring.Add(subConnMember{key: "2", SubConn: &fakeSubConn{id: "2"}}))
