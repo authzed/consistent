@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/cespare/xxhash/v2"
-	"github.com/samber/lo"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/balancer/base"
@@ -25,6 +24,14 @@ type fakeSubConn struct {
 }
 
 func (fakeSubConn) Connect() {}
+
+func keys(members []hashring.Member) []string {
+	keys := make([]string, 0, len(members))
+	for _, member := range members {
+		keys = append(keys, member.Key())
+	}
+	return keys
+}
 
 // Note: this is testing picker behavior and not the hashring
 // behavior itself, see `pkg/consistent` for tests of the hashring.
@@ -135,7 +142,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 	type balancerState struct {
 		ConnectivityState connectivity.State
 		err               error
-		members           []string
+		memberKeys        []string
 		spread            uint8
 		replicationFactor uint16
 	}
@@ -189,7 +196,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			expectedStates: []balancerState{
 				{
 					ConnectivityState: connectivity.Connecting,
-					members:           []string{"t1", "t2", "t3"},
+					memberKeys:        []string{"t1", "t2", "t3"},
 					replicationFactor: 100,
 					spread:            1,
 				},
@@ -221,13 +228,13 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			expectedStates: []balancerState{
 				{
 					ConnectivityState: connectivity.Connecting,
-					members:           []string{"t1", "t2", "t3"},
+					memberKeys:        []string{"t1", "t2", "t3"},
 					replicationFactor: 100,
 					spread:            1,
 				},
 				{
 					ConnectivityState: connectivity.Connecting,
-					members:           []string{"t1", "t2"},
+					memberKeys:        []string{"t1", "t2"},
 					replicationFactor: 100,
 					spread:            1,
 				},
@@ -261,13 +268,13 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			expectedStates: []balancerState{
 				{
 					ConnectivityState: connectivity.Connecting,
-					members:           []string{"t1", "t2", "t3"},
+					memberKeys:        []string{"t1", "t2", "t3"},
 					replicationFactor: 100,
 					spread:            1,
 				},
 				{
 					ConnectivityState: connectivity.Connecting,
-					members:           []string{"t1", "t2", "t3", "t4"},
+					memberKeys:        []string{"t1", "t2", "t3", "t4"},
 					replicationFactor: 100,
 					spread:            1,
 				},
@@ -300,13 +307,13 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			expectedStates: []balancerState{
 				{
 					ConnectivityState: connectivity.Connecting,
-					members:           []string{"t1", "t2", "t3"},
+					memberKeys:        []string{"t1", "t2", "t3"},
 					replicationFactor: 100,
 					spread:            1,
 				},
 				{
 					ConnectivityState: connectivity.Connecting,
-					members:           []string{"t1", "t2", "t4"},
+					memberKeys:        []string{"t1", "t2", "t4"},
 					replicationFactor: 100,
 					spread:            1,
 				},
@@ -343,9 +350,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 					} else {
 						p := s.Picker.(*consistentHashringPicker)
 						require.Equal(t, expected.spread, p.spread)
-						require.ElementsMatch(t, expected.members, lo.Map(p.hashring.Members(), func(m hashring.Member, index int) string {
-							return m.Key()
-						}))
+						require.ElementsMatch(t, expected.memberKeys, keys(p.hashring.Members()))
 					}
 
 					i++
