@@ -1,3 +1,14 @@
+// Package consistent implements a gRPC Balancer that routes requests based
+// upon a consistent hashring.
+//
+// The hashing algorithm is customizable, but xxhash is recommended.
+//
+// A large portion of the structure of this library is based off of the example
+// implementation in grpc-go. That original work is copyrighted by the gRPC
+// authors and licensed under the Apache License, Version 2.0.
+//
+// This package relies on the synchronization guarantees provided by
+// `ccBalancerWrapper`, an upstream type that serializes calls to the balancer.
 package consistent
 
 import (
@@ -17,15 +28,6 @@ import (
 
 	"github.com/authzed/consistent/hashring"
 )
-
-// This is based off of the example implementation in grpc-go:
-//   https://github.com/grpc/grpc-go/blob/afcbdc9ace7b4af94d014620727ea331cc3047fe/balancer/base/balancer.go
-// The original work is copyright gRPC authors and licensed under the Apache License, Version 2.0.
-
-// Note that there is little locking in this file. In grpc it is wrapped
-// with `ccBalancerWrapper` which serializes calls to these callbacks.
-//  See: https://github.com/grpc/grpc-go/blob/417d4b6895679bd9378cb37c2afecf6a292eb267/balancer_conn_wrappers.go#L35-L48
-// The hashring also locks internally.a
 
 type ctxKey string
 
