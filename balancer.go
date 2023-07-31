@@ -32,38 +32,42 @@ import (
 type ctxKey string
 
 const (
-	// BalancerName is the name of consistent-hashring balancer.
+	// BalancerName is the name used to identify this implementation of a
+	// consistent-hashring balancer to gRPC.
 	BalancerName = "consistent-hashring"
 
-	// CtxKey is the key for the grpc request's context.Context which points to
-	// the key to hash for the request. The value it points to must be []byte
+	// CtxKey is the key that will be present in each gRPC request's context
+	// that points to the value that will be hashed in order to map the request
+	// to the hashring.
+	//
+	// The value stored at this key must be []byte.
 	CtxKey ctxKey = "requestKey"
-
-	defaultReplicationFactor = 100
-	defaultSpread            = 1
 )
 
-var defaultBalancerServiceConfig = &BalancerConfig{
-	ReplicationFactor: defaultReplicationFactor,
-	Spread:            defaultSpread,
+// DefaultBalancerConfig provides fallback values when balancers parse invalid
+// configuration JSON.
+//
+// Modifying this variable will change the behavior of all allocated balancers.
+var DefaultBalancerConfig = &BalancerConfig{
+	ReplicationFactor: 100,
+	Spread:            1,
 }
-
-// DefaultBalancerServiceConfigJSON is a grpc Service Config JSON with the
-// defaults for the ConsstentHashringBalancer configured.
-var DefaultBalancerServiceConfigJSON = defaultBalancerServiceConfig.MustServiceConfigJSON()
 
 // BalancerConfig exposes the configurable aspects of the balancer.
 //
-// The intention of this type is to be used with `grpc.WithDefaultServiceConfig`
-// through the `ServiceConfigJSON` or `MustServiceConfigJSON` methods.
+// This type is meant to be used with `grpc.WithDefaultServiceConfig()` through
+// the `ServiceConfigJSON()` or `MustServiceConfigJSON()` methods.
+//
+// If you're unsure of what values to use in this configuration, use
+// `DefaultBalancerConfig`.
 type BalancerConfig struct {
 	serviceconfig.LoadBalancingConfig `json:"-"`
 	ReplicationFactor                 uint16 `json:"replicationFactor,omitempty"`
 	Spread                            uint8  `json:"spread,omitempty"`
 }
 
-// ServiceConfigJSON converts the config into the standard grpc Service Config
-// json format.
+// ServiceConfigJSON encodes the current config into the gRPC Service Config
+// JSON format.
 func (c *BalancerConfig) ServiceConfigJSON() (string, error) {
 	type wrapper struct {
 		Config []map[string]*BalancerConfig `json:"loadBalancingConfig"`
@@ -157,11 +161,11 @@ func (b *ConsistentHashringBuilder) ParseConfig(js json.RawMessage) (serviceconf
 	logger.Infof("parsed balancer config %s", js)
 
 	if lbCfg.ReplicationFactor == 0 {
-		lbCfg.ReplicationFactor = defaultReplicationFactor
+		lbCfg.ReplicationFactor = DefaultBalancerConfig.ReplicationFactor
 	}
 
 	if lbCfg.Spread == 0 {
-		lbCfg.Spread = defaultSpread
+		lbCfg.Spread = DefaultBalancerConfig.Spread
 	}
 
 	b.Lock()
