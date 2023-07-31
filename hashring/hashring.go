@@ -1,19 +1,24 @@
+// Package hashring implements a general purpose consistent hashring with a
+// pluggable hash algorithm.
 package hashring
 
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"sort"
 	"sync"
 
-	"github.com/authzed/spicedb/pkg/spiceerrors"
 	"golang.org/x/exp/slices"
 )
 
 var (
-	ErrMemberAlreadyExists = errors.New("member node already exists")
-	ErrMemberNotFound      = errors.New("member node not found")
-	ErrNotEnoughMembers    = errors.New("not enough member nodes to satisfy request")
+	ErrMemberAlreadyExists      = errors.New("member node already exists")
+	ErrMemberNotFound           = errors.New("member node not found")
+	ErrNotEnoughMembers         = errors.New("not enough member nodes to satisfy request")
+	ErrInvalidReplicationFactor = errors.New("replicationFactor must be at least 1")
+	ErrVnodeNotFound            = errors.New("vnode not found")
+	ErrUnexpectedVnodeCount     = errors.New("found a different number of vnodes than replication factor")
 )
 
 // HasherFunc is the interface for any function that can act as a hasher.
@@ -57,7 +62,7 @@ func MustNewHashring(hasher HasherFunc, replicationFactor uint16) *Hashring {
 // selection performance.
 func NewHashring(hasher HasherFunc, replicationFactor uint16) (*Hashring, error) {
 	if replicationFactor < 1 {
-		return nil, spiceerrors.MustBugf("replicationFactor must be at least 1")
+		return nil, ErrInvalidReplicationFactor
 	}
 
 	return &Hashring{
@@ -141,7 +146,13 @@ func (h *Hashring) Remove(member Member) error {
 			return !less(h.virtualNodes[i], vnode)
 		})
 		if vnodeIndex >= len(h.virtualNodes) {
-			return spiceerrors.MustBugf("unable to find vnode to remove: %020d:%020d:%s", vnode.hashvalue, vnode.members.hashvalue, vnode.members.nodeKey)
+			return fmt.Errorf(
+				"failed to delete vnode %020d/%020d/%s: %w",
+				vnode.hashvalue,
+				vnode.members.hashvalue,
+				vnode.members.nodeKey,
+				ErrVnodeNotFound,
+			)
 		}
 
 		indexesToRemove = append(indexesToRemove, vnodeIndex)
@@ -153,7 +164,7 @@ func (h *Hashring) Remove(member Member) error {
 	})
 
 	if len(indexesToRemove) != int(h.replicationFactor) {
-		return spiceerrors.MustBugf("found wrong number of vnodes to remove: %d != %d", len(indexesToRemove), h.replicationFactor)
+		return ErrUnexpectedVnodeCount
 	}
 
 	for i, indexToRemove := range indexesToRemove {
