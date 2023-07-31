@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/authzed/spicedb/pkg/spiceerrors"
+	"golang.org/x/exp/slices"
 )
 
 var (
@@ -32,7 +33,7 @@ type Hashring struct {
 
 	sync.RWMutex
 	nodes        map[string]nodeRecord
-	virtualNodes virtualNodeList
+	virtualNodes []virtualNode
 }
 
 // MustNewHashring creates a new Hashring with the specified hasher function and replicationFactor.
@@ -110,7 +111,7 @@ func (h *Hashring) Add(member Member) error {
 		h.virtualNodes = append(h.virtualNodes, virtualNode)
 	}
 
-	sort.Sort(h.virtualNodes)
+	slices.SortFunc(h.virtualNodes, less)
 
 	// Add the node to our map of nodes
 	h.nodes[nodeKeyString] = newNodeRecord
@@ -137,7 +138,7 @@ func (h *Hashring) Remove(member Member) error {
 	for _, vnode := range foundNode.virtualNodes {
 		vnode := vnode
 		vnodeIndex := sort.Search(len(h.virtualNodes), func(i int) bool {
-			return !h.virtualNodes[i].less(vnode)
+			return !less(h.virtualNodes[i], vnode)
 		})
 		if vnodeIndex >= len(h.virtualNodes) {
 			return spiceerrors.MustBugf("unable to find vnode to remove: %020d:%020d:%s", vnode.hashvalue, vnode.members.hashvalue, vnode.members.nodeKey)
@@ -162,7 +163,7 @@ func (h *Hashring) Remove(member Member) error {
 
 	// Truncate and sort the nodelist
 	h.virtualNodes = h.virtualNodes[:len(h.virtualNodes)-len(indexesToRemove)]
-	sort.Sort(h.virtualNodes)
+	slices.SortFunc(h.virtualNodes, less)
 
 	// Remove the node from our map
 	delete(h.nodes, nodeKeyString)
