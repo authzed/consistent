@@ -1,4 +1,4 @@
-package balancer
+package consistent
 
 import (
 	"encoding/json"
@@ -15,7 +15,7 @@ import (
 	"google.golang.org/grpc/resolver"
 	"google.golang.org/grpc/serviceconfig"
 
-	"github.com/authzed/spicedb/pkg/consistent"
+	"github.com/authzed/consistent/hashring"
 )
 
 // This is based off of the example implementation in grpc-go:
@@ -95,8 +95,8 @@ var logger = grpclog.Component("consistenthashring")
 // NewConsistentHashringBuilder creates a new balancer.Builder that
 // will create a consistent hashring balancer.
 // Before making a connection, register it with grpc with:
-// `balancer.Register(consistent.NewConsistentHashringBuilder(hasher))`
-func NewConsistentHashringBuilder(hasher consistent.HasherFunc) *ConsistentHashringBuilder {
+// `balancer.Register(hashring.NewConsistentHashringBuilder(hasher))`
+func NewConsistentHashringBuilder(hasher hashring.HasherFunc) *ConsistentHashringBuilder {
 	return &ConsistentHashringBuilder{
 		hasher: hasher,
 	}
@@ -107,19 +107,19 @@ type subConnMember struct {
 	key string
 }
 
-// Key implements consistent.Member
+// Key implements hashring.Member
 // This value is what will be hashed for placement on the consistent hash ring.
 func (s subConnMember) Key() string {
 	return s.key
 }
 
-var _ consistent.Member = &subConnMember{}
+var _ hashring.Member = &subConnMember{}
 
 // ConsistentHashringBuilder stamps out new ConsistentHashringBalancer
 // when requested by grpc.
 type ConsistentHashringBuilder struct {
 	sync.Mutex
-	hasher consistent.HasherFunc
+	hasher hashring.HasherFunc
 	config ConsistentHashringBalancerConfig
 }
 
@@ -181,8 +181,8 @@ type ConsistentHashringBalancer struct {
 	scStates map[balancer.SubConn]connectivity.State
 
 	config   *ConsistentHashringBalancerConfig
-	hashring *consistent.Hashring
-	hasher   consistent.HasherFunc
+	hashring *hashring.Hashring
+	hasher   hashring.HasherFunc
 
 	resolverErr error // the last error reported by the resolver; cleared on successful resolution
 	connErr     error // the last connection error; cleared upon leaving TransientFailure
@@ -224,7 +224,7 @@ func (b *ConsistentHashringBalancer) UpdateClientConnState(s balancer.ClientConn
 	if s.BalancerConfig != nil {
 		svcConfig := s.BalancerConfig.(*ConsistentHashringBalancerConfig)
 		if b.config == nil || svcConfig.ReplicationFactor != b.config.ReplicationFactor {
-			b.hashring = consistent.MustNewHashring(b.hasher, svcConfig.ReplicationFactor)
+			b.hashring = hashring.MustNewHashring(b.hasher, svcConfig.ReplicationFactor)
 			b.config = svcConfig
 		}
 	}
@@ -377,7 +377,7 @@ func (b *ConsistentHashringBalancer) Close() {
 
 type consistentHashringPicker struct {
 	sync.Mutex
-	hashring *consistent.Hashring
+	hashring *hashring.Hashring
 	spread   uint8
 	rand     *rand.Rand
 }

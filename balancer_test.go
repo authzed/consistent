@@ -1,4 +1,4 @@
-package balancer
+package consistent
 
 import (
 	"context"
@@ -16,7 +16,7 @@ import (
 	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/resolver"
 
-	"github.com/authzed/spicedb/pkg/consistent"
+	"github.com/authzed/consistent/hashring"
 )
 
 type fakeSubConn struct {
@@ -78,7 +78,7 @@ func TestConsistentHashringPickerPick(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			p := &consistentHashringPicker{
-				hashring: consistent.MustNewHashring(xxhash.Sum64, tt.rf),
+				hashring: hashring.MustNewHashring(xxhash.Sum64, tt.rf),
 				spread:   tt.spread,
 				rand:     rnd,
 			}
@@ -343,7 +343,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 					} else {
 						p := s.Picker.(*consistentHashringPicker)
 						require.Equal(t, expected.spread, p.spread)
-						require.ElementsMatch(t, expected.members, lo.Map(p.hashring.Members(), func(m consistent.Member, index int) string {
+						require.ElementsMatch(t, expected.members, lo.Map(p.hashring.Members(), func(m hashring.Member, index int) string {
 							return m.Key()
 						}))
 					}
