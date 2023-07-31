@@ -84,7 +84,7 @@ func TestConsistentHashringPickerPick(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			p := &consistentHashringPicker{
+			p := &picker{
 				hashring: hashring.MustNewHashring(xxhash.Sum64, tt.rf),
 				spread:   tt.spread,
 				rand:     rnd,
@@ -348,7 +348,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 					if expected.err != nil {
 						require.Equal(t, base.NewErrPicker(expected.err), s.Picker)
 					} else {
-						p := s.Picker.(*consistentHashringPicker)
+						p := s.Picker.(*picker)
 						require.Equal(t, expected.spread, p.spread)
 						require.ElementsMatch(t, expected.memberKeys, keys(p.hashring.Members()))
 					}

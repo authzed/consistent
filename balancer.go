@@ -309,7 +309,7 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 	if b.state == connectivity.TransientFailure {
 		b.picker = base.NewErrPicker(errors.Join(b.connErr, b.resolverErr))
 	} else {
-		b.picker = &consistentHashringPicker{
+		b.picker = &picker{
 			hashring: b.hashring,
 			spread:   b.config.Spread,
 			rand:     rand.New(rand.NewSource(time.Now().UnixNano())),
@@ -375,28 +375,29 @@ func (b *ringBalancer) Close() {
 	// No internal state to clean up and no need to call RemoveSubConn.
 }
 
-type consistentHashringPicker struct {
+type picker struct {
 	sync.Mutex
 	hashring *hashring.Hashring
 	spread   uint8
 	rand     *rand.Rand
 }
 
-var _ balancer.Picker = (*consistentHashringPicker)(nil)
+var _ balancer.Picker = (*picker)(nil)
 
-// Pick satisfies balancer.Picker and returns a subconnection to use for a
-// request based on the request info. The value stored in CtxKey is hashed
-// into the hashring, and the resulting subconnection is used. Note that
-// there is no fallback behavior if the subconnection is unavailable; this
+// Pick returns a subconnection to use for a request based on the request info.
+//
+// The value stored in CtxKey is hashed into the hashring, and the resulting
+// subconnection is used.
+//
+// There is no fallback behavior if the subconnection is unavailable; this
 // prevents the request from going to a node that doesn't expect to receive it.
+// As long as you are using a resolver that removes connections from the list
+// when they are observably unavailable, this is a non-issue.
+//
 // Spread can be increased to be robust against single node availability
-// problems.
-// For dispatch we generally use a resolver that removes connections from the
-// list when they are observably unavailable, so in practice this is not a
-// huge problem.
-// If spread is greater than 1, a random selection is made from the set of
-// subconns matching the hash.
-func (p *consistentHashringPicker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
+// problems. If spread is greater than 1, a random selection is made from the
+// set of subconns matching the hash.
+func (p *picker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
 	key := info.Ctx.Value(CtxKey).([]byte)
 
 	members, err := p.hashring.FindN(key, p.spread)
@@ -416,7 +417,5 @@ func (p *consistentHashringPicker) Pick(info balancer.PickInfo) (balancer.PickRe
 
 	chosen := members[index].(subConnMember)
 
-	return balancer.PickResult{
-		SubConn: chosen.SubConn,
-	}, nil
+	return balancer.PickResult{SubConn: chosen.SubConn}, nil
 }
