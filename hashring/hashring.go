@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"golang.org/x/exp/slices"
@@ -224,4 +225,26 @@ func (h *Hashring) Members() []Member {
 		membersCopy = append(membersCopy, nodeInfo.member)
 	}
 	return membersCopy
+}
+
+type nodeRecord struct {
+	hashvalue    uint64
+	nodeKey      string
+	member       Member
+	virtualNodes []virtualNode
+}
+
+type virtualNode struct {
+	hashvalue uint64
+	members   nodeRecord
+}
+
+func less(a, b virtualNode) bool {
+	if a.hashvalue == b.hashvalue {
+		if a.members.hashvalue == b.members.hashvalue {
+			return strings.Compare(a.members.nodeKey, b.members.nodeKey) < 0
+		}
+		return a.members.hashvalue < b.members.hashvalue
+	}
+	return a.hashvalue < b.hashvalue
 }
