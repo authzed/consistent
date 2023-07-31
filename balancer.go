@@ -112,13 +112,11 @@ type subConnMember struct {
 	key string
 }
 
-// Key implements hashring.Member
+// Key implements hashring.Member.
 // This value is what will be hashed for placement on the consistent hash ring.
-func (s subConnMember) Key() string {
-	return s.key
-}
+func (s subConnMember) Key() string { return s.key }
 
-var _ hashring.Member = &subConnMember{}
+var _ hashring.Member = (*subConnMember)(nil)
 
 // ConsistentHashringBuilder stamps out new ConsistentHashringBalancer
 // when requested by grpc.
@@ -127,6 +125,8 @@ type ConsistentHashringBuilder struct {
 	hasher hashring.HasherFunc
 	config BalancerConfig
 }
+
+var _ balancer.Builder = (*ConsistentHashringBuilder)(nil)
 
 // Build satisfies balancer.Builder and returns a new ConsistentHashringBalancer.
 func (b *ConsistentHashringBuilder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
@@ -192,6 +192,8 @@ type ConsistentHashringBalancer struct {
 	resolverErr error // the last error reported by the resolver; cleared on successful resolution
 	connErr     error // the last connection error; cleared upon leaving TransientFailure
 }
+
+var _ balancer.Balancer = (*ConsistentHashringBalancer)(nil)
 
 // ResolverError satisfies balancer.Balancer and is called when there is a
 // an error in the resolver.
@@ -386,6 +388,8 @@ type consistentHashringPicker struct {
 	spread   uint8
 	rand     *rand.Rand
 }
+
+var _ balancer.Picker = (*consistentHashringPicker)(nil)
 
 // Pick satisfies balancer.Picker and returns a subconnection to use for a
 // request based on the request info. The value stored in CtxKey is hashed
