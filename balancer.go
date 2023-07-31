@@ -94,14 +94,15 @@ func (c *ConsistentHashringBalancerConfig) MustToServiceConfigJSON() string {
 
 var logger = grpclog.Component("consistenthashring")
 
-// NewConsistentHashringBuilder creates a new balancer.Builder that
-// will create a consistent hashring balancer.
-// Before making a connection, register it with grpc with:
-// `balancer.Register(hashring.NewConsistentHashringBuilder(hasher))`
-func NewConsistentHashringBuilder(hasher hashring.HasherFunc) *ConsistentHashringBuilder {
-	return &ConsistentHashringBuilder{
-		hasher: hasher,
-	}
+// NewBuilder allocates a new gRPC balancer.Builder that will route traffic
+// according to a hashring configured with the provided hash function.
+//
+// The following is an example usage:
+// ```go
+// balancer.Register(consistent.NewBuilder(xxhash.Sum64))
+// ```
+func NewBuilder(hashfn hashring.HasherFunc) balancer.Builder {
+	return &ConsistentHashringBuilder{hasher: hashfn}
 }
 
 type subConnMember struct {

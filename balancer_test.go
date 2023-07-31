@@ -323,7 +323,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			b := NewConsistentHashringBuilder(xxhash.Sum64)
+			b := NewBuilder(xxhash.Sum64)
 			cc := newFakeClientConn()
 			bb := b.Build(cc, balancer.BuildOptions{})
 			cb := bb.(*ConsistentHashringBalancer)
