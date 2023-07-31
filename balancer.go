@@ -103,8 +103,8 @@ var logger = grpclog.Component("consistenthashring")
 // ```go
 // balancer.Register(consistent.NewBuilder(xxhash.Sum64))
 // ```
-func NewBuilder(hashfn hashring.HasherFunc) balancer.Builder {
-	return &ConsistentHashringBuilder{hasher: hashfn}
+func NewBuilder(hashfn hashring.HasherFunc) Builder {
+	return &builder{hasher: hashfn}
 }
 
 type subConnMember struct {
@@ -118,18 +118,24 @@ func (s subConnMember) Key() string { return s.key }
 
 var _ hashring.Member = (*subConnMember)(nil)
 
-// ConsistentHashringBuilder stamps out new ConsistentHashringBalancer
-// when requested by grpc.
-type ConsistentHashringBuilder struct {
+type builder struct {
 	sync.Mutex
 	hasher hashring.HasherFunc
 	config BalancerConfig
 }
 
-var _ balancer.Builder = (*ConsistentHashringBuilder)(nil)
+// Builder combines both of gRPC's `balancer.Builder` and
+// `balancer.ConfigParser` interfaces.
+type Builder interface {
+	balancer.Builder
+	balancer.ConfigParser
+}
 
-// Build satisfies balancer.Builder and returns a new ConsistentHashringBalancer.
-func (b *ConsistentHashringBuilder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
+var _ Builder = (*builder)(nil)
+
+func (b *builder) Name() string { return BalancerName }
+
+func (b *builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
 	bal := &ConsistentHashringBalancer{
 		cc:       cc,
 		subConns: resolver.NewAddressMap(),
@@ -143,16 +149,7 @@ func (b *ConsistentHashringBuilder) Build(cc balancer.ClientConn, _ balancer.Bui
 	return bal
 }
 
-// Name satisfies balancer.Builder and returns the name of the balancer for
-// use in Service Config files.
-func (b *ConsistentHashringBuilder) Name() string {
-	return BalancerName
-}
-
-// ParseConfig satisfies balancer.ConfigParser and is used to parse new
-// Service Config json. The results are stored on the builder so that
-// subsequently built Balancers use the config.
-func (b *ConsistentHashringBuilder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalancingConfig, error) {
+func (b *builder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalancingConfig, error) {
 	var lbCfg BalancerConfig
 	if err := json.Unmarshal(js, &lbCfg); err != nil {
 		return nil, fmt.Errorf("wrr: unable to unmarshal LB policy config: %s, error: %w", string(js), err)
