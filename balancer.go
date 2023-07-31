@@ -136,7 +136,7 @@ var _ Builder = (*builder)(nil)
 func (b *builder) Name() string { return BalancerName }
 
 func (b *builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
-	bal := &ConsistentHashringBalancer{
+	bal := &ringBalancer{
 		cc:       cc,
 		subConns: resolver.NewAddressMap(),
 		scStates: make(map[balancer.SubConn]connectivity.State),
@@ -172,9 +172,7 @@ func (b *builder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalancingCo
 	return &lbCfg, nil
 }
 
-// ConsistentHashringBalancer implements balancer.Balancer and uses a
-// consistent hashring to pick a backend for a request.
-type ConsistentHashringBalancer struct {
+type ringBalancer struct {
 	state    connectivity.State
 	cc       balancer.ClientConn
 	picker   balancer.Picker
@@ -190,11 +188,9 @@ type ConsistentHashringBalancer struct {
 	connErr     error // the last connection error; cleared upon leaving TransientFailure
 }
 
-var _ balancer.Balancer = (*ConsistentHashringBalancer)(nil)
+var _ balancer.Balancer = (*ringBalancer)(nil)
 
-// ResolverError satisfies balancer.Balancer and is called when there is a
-// an error in the resolver.
-func (b *ConsistentHashringBalancer) ResolverError(err error) {
+func (b *ringBalancer) ResolverError(err error) {
 	b.resolverErr = err
 	if b.subConns.Len() == 0 {
 		b.state = connectivity.TransientFailure
@@ -213,11 +209,12 @@ func (b *ConsistentHashringBalancer) ResolverError(err error) {
 	})
 }
 
-// UpdateClientConnState satisfies balancer.Balancer and is called when there
-// are changes in the Address set or Service Config that the balancer may
-// want to react to. In this case, the hashring is updated and a new picker
-// using that hashring is generated.
-func (b *ConsistentHashringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
+// UpdateClientConnState is called when there are changes in the Address set or
+// Service Config that the balancer may want to react to.
+//
+// In this case, the hashring is updated and a new picker using that hashring
+// is generated.
+func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 	if logger.V(2) {
 		logger.Info("got new ClientConn state: ", s)
 	}
@@ -325,10 +322,10 @@ func (b *ConsistentHashringBalancer) UpdateClientConnState(s balancer.ClientConn
 	return nil
 }
 
-// UpdateSubConnState satisfies balancer.Balancer and is called when there is
-// a change in a subconnection state. Subconnection state can affect the overall
-// state of the balancer. This also attempts to reconnect any idle connections.
-func (b *ConsistentHashringBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
+// UpdateSubConnState is called when there's a change in a subconnection state.
+// Subconnection state can affect the overall state of the balancer.
+// This also attempts to reconnect any idle connections.
+func (b *ringBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.SubConnState) {
 	s := state.ConnectivityState
 	if logger.V(2) {
 		logger.Infof("base.baseBalancer: handle SubConn state change: %p, %v", sc, s)
@@ -374,9 +371,8 @@ func (b *ConsistentHashringBalancer) UpdateSubConnState(sc balancer.SubConn, sta
 	b.cc.UpdateState(balancer.State{ConnectivityState: b.state, Picker: b.picker})
 }
 
-// Close is a no-op because base balancer doesn't have internal state to clean up,
-// and it doesn't need to call RemoveSubConn for the SubConns.
-func (b *ConsistentHashringBalancer) Close() {
+func (b *ringBalancer) Close() {
+	// No internal state to clean up and no need to call RemoveSubConn.
 }
 
 type consistentHashringPicker struct {
