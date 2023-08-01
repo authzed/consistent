@@ -6,7 +6,7 @@ require (
 	github.com/cespare/xxhash/v2 v2.2.0
 	github.com/stretchr/testify v1.8.4
 	golang.org/x/exp v0.0.0-20230801115018-d63ba01acd4b
-	google.golang.org/grpc v1.57.0
+	google.golang.org/grpc v1.56.2
 )
 
 require (
