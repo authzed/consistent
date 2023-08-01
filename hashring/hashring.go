@@ -118,7 +118,7 @@ func (h *Ring) Add(member Member) error {
 		h.virtualNodes = append(h.virtualNodes, virtualNode)
 	}
 
-	slices.SortFunc(h.virtualNodes, less)
+	slices.SortFunc(h.virtualNodes, cmpVnode)
 
 	// Add the node to our map of nodes
 	h.nodes[nodeKeyString] = newNodeRecord
@@ -144,7 +144,7 @@ func (h *Ring) Remove(member Member) error {
 	for _, vnode := range foundNode.virtualNodes {
 		vnode := vnode
 		vnodeIndex := sort.Search(len(h.virtualNodes), func(i int) bool {
-			return !less(h.virtualNodes[i], vnode)
+			return cmpVnode(h.virtualNodes[i], vnode) >= 0
 		})
 		if vnodeIndex >= len(h.virtualNodes) {
 			return fmt.Errorf(
@@ -175,7 +175,7 @@ func (h *Ring) Remove(member Member) error {
 
 	// Truncate and sort the nodelist
 	h.virtualNodes = h.virtualNodes[:len(h.virtualNodes)-len(indexesToRemove)]
-	slices.SortFunc(h.virtualNodes, less)
+	slices.SortFunc(h.virtualNodes, cmpVnode)
 
 	// Remove the node from our map
 	delete(h.nodes, nodeKeyString)
@@ -239,12 +239,24 @@ type virtualNode struct {
 	members   nodeRecord
 }
 
-func less(a, b virtualNode) bool {
+// compareUint64 should be replaced with the standard library's cmp.Compare once
+// Go 1.21 is released.
+func compareUint64(x, y uint64) int {
+	if x < y {
+		return -1
+	}
+	if x > y {
+		return +1
+	}
+	return 0
+}
+
+func cmpVnode(a, b virtualNode) int {
 	if a.hashvalue == b.hashvalue {
 		if a.members.hashvalue == b.members.hashvalue {
-			return strings.Compare(a.members.nodeKey, b.members.nodeKey) < 0
+			return strings.Compare(a.members.nodeKey, b.members.nodeKey)
 		}
-		return a.members.hashvalue < b.members.hashvalue
+		return compareUint64(a.members.hashvalue, b.members.hashvalue)
 	}
-	return a.hashvalue < b.hashvalue
+	return compareUint64(a.hashvalue, b.hashvalue)
 }
