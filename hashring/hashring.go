@@ -20,7 +20,7 @@ var (
 	ErrMemberAlreadyExists      = errors.New("member node already exists")
 	ErrMemberNotFound           = errors.New("member node not found")
 	ErrNotEnoughMembers         = errors.New("not enough member nodes to satisfy request")
-	ErrInvalidReplicationFactor = errors.New("replicationFactor must be at least 1")
+	ErrInvalidReplicationFactor = errors.New("replication factor must be at least 1")
 	ErrVnodeNotFound            = errors.New("vnode not found")
 	ErrUnexpectedVnodeCount     = errors.New("found a different number of vnodes than replication factor")
 )
