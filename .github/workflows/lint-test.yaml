@@ -18,7 +18,6 @@ jobs:
       - uses: "authzed/actions/setup-go@main"
         with:
           go-version: "${{ env.GO_VERSION }}"
-      - uses: "authzed/actions/gofumpt@main"
       - uses: "authzed/actions/go-mod-tidy@main"
       - uses: "authzed/actions/golangci-lint@main"
       - uses: "authzed/actions/govulncheck@main"
