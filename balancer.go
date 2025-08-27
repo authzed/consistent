@@ -383,6 +383,12 @@ func (b *ringBalancer) Close() {
 	// No internal state to clean up and no need to call RemoveSubConn.
 }
 
+func (b *ringBalancer) ExitIdle() {
+	// No-op as we already reconnect SubConns on demand when they report
+	// connectivity.Idle in UpdateSubConnState. This is here to satisfy
+	// the balancer.Balancer interface >v1.74.0
+}
+
 type picker struct {
 	hashring *hashring.Ring
 	spread   uint8
