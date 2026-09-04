@@ -146,13 +146,15 @@ func (b *builder) Name() string { return BalancerName }
 
 func (b *builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
 	bal := &ringBalancer{
-		cc:       cc,
-		subConns: resolver.NewAddressMap(),
-		scStates: make(map[balancer.SubConn]connectivity.State),
-		csEvltr:  &balancer.ConnectivityStateEvaluator{},
-		state:    connectivity.Connecting,
-		hasher:   b.hashfn,
-		picker:   base.NewErrPicker(balancer.ErrNoSubConnAvailable),
+		cc:          cc,
+		subConns:    resolver.NewAddressMap(),
+		scStates:    make(map[balancer.SubConn]connectivity.State),
+		scKeys:      make(map[balancer.SubConn]string),
+		ringMembers: make(map[balancer.SubConn]struct{}),
+		csEvltr:     &balancer.ConnectivityStateEvaluator{},
+		state:       connectivity.Connecting,
+		hasher:      b.hashfn,
+		picker:      base.NewErrPicker(balancer.ErrNoSubConnAvailable),
 	}
 
 	return bal
@@ -188,6 +190,10 @@ type ringBalancer struct {
 	csEvltr  *balancer.ConnectivityStateEvaluator
 	subConns *resolver.AddressMap
 	scStates map[balancer.SubConn]connectivity.State
+	// scKeys holds the hashring key of every SubConn the resolver gave us.
+	scKeys map[balancer.SubConn]string
+	// ringMembers is the set of SubConns on the hashring: only READY ones.
+	ringMembers map[balancer.SubConn]struct{}
 
 	config   *BalancerConfig
 	hashring *hashring.Ring
@@ -266,15 +272,9 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 
 			b.subConns.Set(addr, sc)
 			b.scStates[sc] = connectivity.Idle
+			b.scKeys[sc] = addr.ServerName + addr.Addr
 			b.csEvltr.RecordTransition(connectivity.Shutdown, connectivity.Idle)
 			sc.Connect()
-
-			if err := b.hashring.Add(subConnMember{
-				SubConn: sc,
-				key:     addr.ServerName + addr.Addr,
-			}); err != nil {
-				return fmt.Errorf("couldn't add to hashring")
-			}
 		}
 	}
 
@@ -287,11 +287,8 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 			b.subConns.Delete(addr)
 			// Keep the state of this sc in b.scStates until sc's state becomes Shutdown.
 			// The entry will be deleted in UpdateSubConnState.
-			if err := b.hashring.Remove(subConnMember{
-				SubConn: sc,
-				key:     addr.ServerName + addr.Addr,
-			}); err != nil {
-				return fmt.Errorf("couldn't add to hashring")
+			if err := b.removeFromRing(sc); err != nil {
+				return err
 			}
 		}
 	}
@@ -313,19 +310,52 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 		return balancer.ErrBadResolverState
 	}
 
-	// If the overall connection state is not in transient failure, we return
-	// addr new picker with addr reference to the hashring (otherwise an error picker)
+	b.regeneratePicker()
+	b.cc.UpdateState(balancer.State{ConnectivityState: b.state, Picker: b.picker})
+
+	return nil
+}
+
+// regeneratePicker installs an error picker while the balancer is in
+// TRANSIENT_FAILURE and a hashring picker otherwise.
+func (b *ringBalancer) regeneratePicker() {
 	if b.state == connectivity.TransientFailure {
 		b.picker = base.NewErrPicker(errors.Join(b.connErr, b.resolverErr))
-	} else {
-		b.picker = &picker{
-			hashring: b.hashring,
-			spread:   b.config.Spread,
-		}
+		return
 	}
 
-	// update the ClientConn with the current hashring picker picker
-	b.cc.UpdateState(balancer.State{ConnectivityState: b.state, Picker: b.picker})
+	b.picker = &picker{
+		hashring: b.hashring,
+		spread:   b.config.Spread,
+	}
+}
+
+// addToRing places sc on the hashring if it is not already there.
+func (b *ringBalancer) addToRing(sc balancer.SubConn) error {
+	if _, ok := b.ringMembers[sc]; ok {
+		return nil
+	}
+
+	if err := b.hashring.Add(subConnMember{SubConn: sc, key: b.scKeys[sc]}); err != nil {
+		return fmt.Errorf("couldn't add to hashring: %w", err)
+	}
+
+	b.ringMembers[sc] = struct{}{}
+
+	return nil
+}
+
+// removeFromRing takes sc off the hashring if it is there.
+func (b *ringBalancer) removeFromRing(sc balancer.SubConn) error {
+	if _, ok := b.ringMembers[sc]; !ok {
+		return nil
+	}
+
+	if err := b.hashring.Remove(subConnMember{SubConn: sc, key: b.scKeys[sc]}); err != nil {
+		return fmt.Errorf("couldn't remove from hashring: %w", err)
+	}
+
+	delete(b.ringMembers, sc)
 
 	return nil
 }
@@ -362,6 +392,19 @@ func (b *ringBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.Su
 
 	b.scStates[sc] = s
 
+	// A backend only receives traffic while its connection is READY. Keys
+	// hashed to a backend that is connecting or failed move to the closest
+	// ready member instead of waiting on a connection that may never come.
+	var ringErr error
+	if s == connectivity.Ready {
+		ringErr = b.addToRing(sc)
+	} else {
+		ringErr = b.removeFromRing(sc)
+	}
+	if ringErr != nil {
+		logger.Warningf("consistent-hashring: %v", ringErr)
+	}
+
 	switch s {
 	case connectivity.Idle:
 		sc.Connect()
@@ -369,12 +412,14 @@ func (b *ringBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.Su
 		// When an address was removed by resolver, b called RemoveSubConn but
 		// kept the sc's state in scStates. Remove state for this sc here.
 		delete(b.scStates, sc)
+		delete(b.scKeys, sc)
 	case connectivity.TransientFailure:
 		// Save error to be reported via picker.
 		b.connErr = state.ConnectionError
 	}
 
 	b.state = b.csEvltr.RecordTransition(oldS, s)
+	b.regeneratePicker()
 
 	b.cc.UpdateState(balancer.State{ConnectivityState: b.state, Picker: b.picker})
 }
@@ -401,10 +446,10 @@ var _ balancer.Picker = (*picker)(nil)
 // The value stored in CtxKey is hashed into the hashring, and the resulting
 // subconnection is used.
 //
-// There is no fallback behavior if the subconnection is unavailable; this
-// prevents the request from going to a node that doesn't expect to receive it.
-// As long as you are using a resolver that removes connections from the list
-// when they are observably unavailable, this is a non-issue.
+// The hashring only contains READY subconnections, so a key whose closest
+// backend is down is served by the next closest ready backend. When no
+// backend is ready the RPC is queued until one becomes ready (or the
+// balancer reports TRANSIENT_FAILURE and installs an error picker).
 //
 // Spread can be increased to be robust against single node availability
 // problems. If spread is greater than 1, a random selection is made from the
@@ -413,13 +458,20 @@ func (p *picker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
 	key := info.Ctx.Value(CtxKey).([]byte)
 
 	members, err := p.hashring.FindN(key, p.spread)
+	if errors.Is(err, hashring.ErrNotEnoughMembers) {
+		// Fewer ready backends than the configured spread: use those that are.
+		members, err = p.hashring.FindN(key, 1)
+	}
+	if errors.Is(err, hashring.ErrNotEnoughMembers) {
+		return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
+	}
 	if err != nil {
 		return balancer.PickResult{}, err
 	}
 
 	index := 0
-	if p.spread > 1 {
-		index = intn(p.spread)
+	if len(members) > 1 {
+		index = intn(uint8(len(members)))
 	}
 
 	chosen := members[index].(subConnMember)

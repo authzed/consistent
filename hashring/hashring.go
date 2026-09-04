@@ -9,11 +9,10 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
-
-	"golang.org/x/exp/slices"
 )
 
 var (

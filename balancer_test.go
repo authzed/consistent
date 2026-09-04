@@ -155,26 +155,24 @@ func TestConsistentHashringBalancerConfigServiceConfigJSON(t *testing.T) {
 }
 
 func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
+	// Each step applies a resolver update, then brings every SubConn the
+	// resolver produced to READY, and finally checks the installed picker.
 	type balancerState struct {
 		ConnectivityState connectivity.State
 		err               error
 		memberKeys        []string
 		spread            uint8
-		replicationFactor uint16
 	}
 
 	tests := []struct {
-		name              string
-		s                 []balancer.ClientConnState
-		expectedStates    []balancerState
-		expectedConnState connectivity.State
-		wantErr           bool
+		name           string
+		s              []balancer.ClientConnState
+		expectedStates []balancerState
+		wantErr        bool
 	}{
 		{
-			name:              "no hashring",
-			expectedStates:    []balancerState{},
-			expectedConnState: connectivity.TransientFailure,
-			wantErr:           true,
+			name:    "no hashring",
+			wantErr: true,
 		},
 		{
 			name: "configures hashring, no addresses",
@@ -191,8 +189,7 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 					err:               errors.Join(nil, fmt.Errorf("produced zero addresses")),
 				},
 			},
-			expectedConnState: connectivity.TransientFailure,
-			wantErr:           true,
+			wantErr: true,
 		},
 		{
 			name: "configures hashring, 3 addresses",
@@ -211,13 +208,11 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			}},
 			expectedStates: []balancerState{
 				{
-					ConnectivityState: connectivity.Connecting,
+					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2", "t3"},
-					replicationFactor: 100,
 					spread:            1,
 				},
 			},
-			expectedConnState: connectivity.Idle,
 		},
 		{
 			name: "existing hashring with 3 nodes, 1 removed",
@@ -243,19 +238,16 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			}},
 			expectedStates: []balancerState{
 				{
-					ConnectivityState: connectivity.Connecting,
+					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2", "t3"},
-					replicationFactor: 100,
 					spread:            1,
 				},
 				{
-					ConnectivityState: connectivity.Connecting,
+					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2"},
-					replicationFactor: 100,
 					spread:            1,
 				},
 			},
-			expectedConnState: connectivity.Idle,
 		},
 		{
 			name: "existing hashring with 3 nodes, 1 added",
@@ -283,19 +275,16 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			}},
 			expectedStates: []balancerState{
 				{
-					ConnectivityState: connectivity.Connecting,
+					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2", "t3"},
-					replicationFactor: 100,
 					spread:            1,
 				},
 				{
-					ConnectivityState: connectivity.Connecting,
+					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2", "t3", "t4"},
-					replicationFactor: 100,
 					spread:            1,
 				},
 			},
-			expectedConnState: connectivity.Idle,
 		},
 		{
 			name: "existing hashring with 3 nodes, 1 replaced",
@@ -322,67 +311,64 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 			}},
 			expectedStates: []balancerState{
 				{
-					ConnectivityState: connectivity.Connecting,
+					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2", "t3"},
-					replicationFactor: 100,
 					spread:            1,
 				},
 				{
-					ConnectivityState: connectivity.Connecting,
+					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2", "t4"},
-					replicationFactor: 100,
 					spread:            1,
 				},
 			},
-			expectedConnState: connectivity.Idle,
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b := NewBuilder(xxhash.Sum64)
 			cc := newFakeClientConn()
-			bb := b.Build(cc, balancer.BuildOptions{})
-			cb := bb.(*ringBalancer)
+			cb := b.Build(cc, balancer.BuildOptions{}).(*ringBalancer)
 
-			tt := tt
-
-			done := make(chan struct{})
-
+			// The balancer pushes a state on every change; the assertions below
+			// look at the balancer itself, so the pushes only need draining.
 			go func() {
-				i := 0
-
-				if len(tt.expectedStates) == 0 {
-					done <- struct{}{}
-					return
-				}
-
-				for {
-					s := <-cc.stateCh
-					expected := tt.expectedStates[i]
-					require.Equal(t, expected.ConnectivityState, s.ConnectivityState)
-
-					if expected.err != nil {
-						require.Equal(t, base.NewErrPicker(expected.err), s.Picker)
-					} else {
-						p := s.Picker.(*picker)
-						require.Equal(t, expected.spread, p.spread)
-						require.ElementsMatch(t, expected.memberKeys, keys(p.hashring.Members()))
-					}
-
-					i++
-					done <- struct{}{}
+				for range cc.stateCh {
 				}
 			}()
+			defer close(cc.stateCh)
 
-			for _, state := range tt.s {
+			if len(tt.s) == 0 {
+				err := cb.UpdateClientConnState(balancer.ClientConnState{})
+				require.Equal(t, tt.wantErr, err != nil)
+				require.Equal(t, base.NewErrPicker(nil), cb.picker)
+				return
+			}
+
+			for i, state := range tt.s {
 				if err := cb.UpdateClientConnState(state); (err != nil) != tt.wantErr {
 					t.Errorf("UpdateClientConnState() error = %v, wantErr %v", err, tt.wantErr)
 				}
 
-				<-done
-			}
+				for _, sci := range cb.subConns.Values() {
+					sc := sci.(balancer.SubConn)
+					if cb.scStates[sc] == connectivity.Ready {
+						continue
+					}
+					cb.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Connecting})
+					cb.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Ready})
+				}
 
-			require.Equal(t, tt.expectedConnState, cb.csEvltr.CurrentState())
+				expected := tt.expectedStates[i]
+				require.Equal(t, expected.ConnectivityState, cb.state)
+				if expected.err != nil {
+					require.Equal(t, base.NewErrPicker(expected.err), cb.picker)
+					continue
+				}
+
+				p := cb.picker.(*picker)
+				require.Equal(t, expected.spread, p.spread)
+				require.ElementsMatch(t, expected.memberKeys, keys(p.hashring.Members()))
+			}
 		})
 	}
 }
