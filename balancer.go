@@ -471,16 +471,15 @@ var _ balancer.Picker = (*picker)(nil)
 func (p *picker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
 	key := info.Ctx.Value(CtxKey).([]byte)
 
+	// FindN only fails with hashring.ErrNotEnoughMembers.
 	members, err := p.hashring.FindN(key, p.spread)
-	if errors.Is(err, hashring.ErrNotEnoughMembers) {
+	if err != nil {
 		// Fewer ready backends than the configured spread: use those that are.
 		members, err = p.hashring.FindN(key, 1)
-	}
-	if errors.Is(err, hashring.ErrNotEnoughMembers) {
-		return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
-	}
-	if err != nil {
-		return balancer.PickResult{}, err
+		if err != nil {
+			// No ready backends at all: queue the RPC until one is ready.
+			return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
+		}
 	}
 
 	index := 0
