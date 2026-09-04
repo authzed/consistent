@@ -1,6 +1,7 @@
 package hashring
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
@@ -310,4 +311,175 @@ type member int
 
 func (m member) Key() string {
 	return fmt.Sprintf("member-%d", m)
+}
+
+// tableHash is a HashFunc backed by a lookup table.
+// It lets a test place members, virtual nodes and keys at exact positions on
+// the ring, which a real hash function makes practically impossible.
+// Hashing an input that is missing from the table fails the test.
+type tableHash struct {
+	t      *testing.T
+	hashes map[string]uint64
+}
+
+func (th tableHash) hash(b []byte) uint64 {
+	v, ok := th.hashes[string(b)]
+	if !ok {
+		th.t.Fatalf("no hash configured for input %q", b)
+	}
+	return v
+}
+
+// vnodeInput mirrors the buffer Add hashes to place a virtual node:
+// the member hash followed by the virtual node offset, both little-endian.
+func vnodeInput(memberHash uint64, offset uint16) string {
+	buf := make([]byte, 10)
+	binary.LittleEndian.PutUint64(buf, memberHash)
+	binary.LittleEndian.PutUint16(buf[8:], offset)
+	return string(buf)
+}
+
+func memberKeys(members []Member) []string {
+	keys := make([]string, 0, len(members))
+	for _, m := range members {
+		keys = append(keys, m.Key())
+	}
+	return keys
+}
+
+// A key owned by the first virtual node at or after its hash.
+// A key hashing exactly onto a virtual node belongs to that node, and a key
+// hashing past the last virtual node wraps around to the first one.
+func TestFindNWalksTheRingClockwiseFromTheKey(t *testing.T) {
+	th := tableHash{t, map[string]uint64{
+		"a": 10, vnodeInput(10, 0): 100,
+		"b": 20, vnodeInput(20, 0): 200,
+
+		"on-a":     100,
+		"between":  150,
+		"on-b":     200,
+		"past-end": 250,
+	}}
+	ring := MustNew(th.hash, 1)
+	require.NoError(t, ring.Add(testNode{nodeKeyAndValue: "a"}))
+	require.NoError(t, ring.Add(testNode{nodeKeyAndValue: "b"}))
+
+	testCases := []struct {
+		key  string
+		want []string
+	}{
+		{"on-a", []string{"a", "b"}},
+		{"between", []string{"b", "a"}},
+		{"on-b", []string{"b", "a"}},
+		{"past-end", []string{"a", "b"}},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.key, func(t *testing.T) {
+			one, err := ring.FindN([]byte(tc.key), 1)
+			require.NoError(t, err)
+			require.Equal(t, tc.want[:1], memberKeys(one))
+
+			two, err := ring.FindN([]byte(tc.key), 2)
+			require.NoError(t, err)
+			require.Equal(t, tc.want, memberKeys(two))
+		})
+	}
+}
+
+// Two members whose keys hash to the same value produce identical virtual
+// node hashes.
+// They must still be told apart, so that removing one of them never removes
+// the other's virtual nodes and the ring shape does not depend on the order
+// in which they were added.
+func TestMembersWithCollidingHashesStayDistinct(t *testing.T) {
+	const rf = 2
+	th := tableHash{t, map[string]uint64{
+		"a":               10,
+		"b":               10,
+		vnodeInput(10, 0): 100,
+		vnodeInput(10, 1): 300,
+		"k":               50,
+	}}
+	a, b := testNode{nodeKeyAndValue: "a"}, testNode{nodeKeyAndValue: "b"}
+
+	for name, order := range map[string][]testNode{
+		"a-then-b": {a, b},
+		"b-then-a": {b, a},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ring := MustNew(th.hash, rf)
+			for _, m := range order {
+				require.NoError(t, ring.Add(m))
+			}
+			require.Len(t, ring.virtualNodes, 2*rf)
+
+			both, err := ring.FindN([]byte("k"), 2)
+			require.NoError(t, err)
+			require.ElementsMatch(t, []string{"a", "b"}, memberKeys(both))
+
+			// Insertion order must not change which member owns the key.
+			first, err := ring.FindN([]byte("k"), 1)
+			require.NoError(t, err)
+			require.Equal(t, []string{"a"}, memberKeys(first))
+
+			require.NoError(t, ring.Remove(a))
+			require.Len(t, ring.virtualNodes, rf)
+			require.Equal(t, []string{"b"}, memberKeys(ring.Members()))
+
+			left, err := ring.FindN([]byte("k"), 1)
+			require.NoError(t, err)
+			require.Equal(t, []string{"b"}, memberKeys(left))
+
+			require.ErrorIs(t, ring.Remove(a), ErrMemberNotFound)
+		})
+	}
+}
+
+func TestNewRejectsAReplicationFactorOfZero(t *testing.T) {
+	ring, err := New(xxhash.Sum64, 0)
+	require.ErrorIs(t, err, ErrInvalidReplicationFactor)
+	require.Nil(t, ring)
+
+	ring, err = New(xxhash.Sum64, 1)
+	require.NoError(t, err)
+	require.NotNil(t, ring)
+}
+
+func TestMustNewPanicsOnlyOnAnInvalidReplicationFactor(t *testing.T) {
+	require.PanicsWithError(t, ErrInvalidReplicationFactor.Error(), func() {
+		MustNew(xxhash.Sum64, 0)
+	})
+
+	var ring *Ring
+	require.NotPanics(t, func() { ring = MustNew(xxhash.Sum64, 1) })
+	require.NotNil(t, ring)
+	require.Equal(t, uint16(1), ring.replicationFactor)
+}
+
+// The ring is sorted and searched with cmpVnode, so it must be a strict total
+// order with the same sign convention as cmp.Compare.
+func TestCmpVnodeOrdersByHashThenMemberHashThenKey(t *testing.T) {
+	vn := func(hash, memberHash uint64, key string) virtualNode {
+		return virtualNode{hash, nodeRecord{hashvalue: memberHash, nodeKey: key}}
+	}
+
+	testCases := []struct {
+		name string
+		a, b virtualNode
+		want int
+	}{
+		{"lower vnode hash", vn(1, 9, "z"), vn(2, 1, "a"), -1},
+		{"higher vnode hash", vn(2, 1, "a"), vn(1, 9, "z"), +1},
+		{"same vnode hash, lower member hash", vn(5, 1, "z"), vn(5, 2, "a"), -1},
+		{"same vnode hash, higher member hash", vn(5, 2, "a"), vn(5, 1, "z"), +1},
+		{"same hashes, lower key", vn(5, 1, "a"), vn(5, 1, "b"), -1},
+		{"same hashes, higher key", vn(5, 1, "b"), vn(5, 1, "a"), +1},
+		{"identical", vn(5, 1, "a"), vn(5, 1, "a"), 0},
+	}
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, cmpVnode(tc.a, tc.b))
+			require.Equal(t, -tc.want, cmpVnode(tc.b, tc.a))
+		})
+	}
 }
