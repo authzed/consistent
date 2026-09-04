@@ -22,11 +22,15 @@ import (
 
 type fakeSubConn struct {
 	balancer.SubConn
-	id           string
-	connectCalls int
+	id            string
+	connectCalls  int
+	shutdownCalls int
 }
 
 func (sc *fakeSubConn) Connect() { sc.connectCalls++ }
+
+// Shutdown is a no-op so the embedded nil SubConn is never dereferenced.
+func (sc *fakeSubConn) Shutdown() { sc.shutdownCalls++ }
 
 func keys(members []hashring.Member) []string {
 	keys := make([]string, 0, len(members))

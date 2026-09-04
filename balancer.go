@@ -147,7 +147,7 @@ func (b *builder) Name() string { return BalancerName }
 func (b *builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
 	bal := &ringBalancer{
 		cc:          cc,
-		subConns:    resolver.NewAddressMap(),
+		subConns:    resolver.NewAddressMapV2[any](),
 		scStates:    make(map[balancer.SubConn]connectivity.State),
 		scKeys:      make(map[balancer.SubConn]string),
 		ringMembers: make(map[balancer.SubConn]struct{}),
@@ -188,7 +188,7 @@ type ringBalancer struct {
 	cc       balancer.ClientConn
 	picker   balancer.Picker
 	csEvltr  *balancer.ConnectivityStateEvaluator
-	subConns *resolver.AddressMap
+	subConns *resolver.AddressMapV2[any]
 	scStates map[balancer.SubConn]connectivity.State
 	// scKeys holds the hashring key of every SubConn the resolver gave us.
 	scKeys map[balancer.SubConn]string
@@ -268,12 +268,16 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 	// if any new targets have been added, they are added to the hashring, and
 	// any that have been removed since the last update are removed from the
 	// hashring.
-	addrsSet := resolver.NewAddressMap()
+	addrsSet := resolver.NewAddressMapV2[any]()
 	for _, addr := range s.ResolverState.Addresses {
 		addrsSet.Set(addr, nil)
 
 		if _, ok := b.subConns.Get(addr); !ok {
 			// addr is addr new address (not existing in b.subConns).
+			// NewSubConn is deprecated only to warn that a SubConn will soon
+			// hold a single address. We already pass exactly one address, and
+			// grpc offers no replacement API yet.
+			//nolint:staticcheck // SA1019: single-address usage is the future-proof form
 			sc, err := b.cc.NewSubConn([]resolver.Address{addr}, balancer.NewSubConnOptions{HealthCheckEnabled: false})
 			if err != nil {
 				logger.Warningf("base.baseBalancer: failed to create new SubConn: %v", err)
@@ -293,7 +297,7 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 		sc := sci.(balancer.SubConn)
 		// addr was removed by resolver.
 		if _, ok := addrsSet.Get(addr); !ok {
-			b.cc.RemoveSubConn(sc)
+			sc.Shutdown()
 			b.subConns.Delete(addr)
 			// Keep the state of this sc in b.scStates until sc's state becomes Shutdown.
 			// The entry will be deleted in UpdateSubConnState.
