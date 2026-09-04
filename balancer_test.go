@@ -22,10 +22,11 @@ import (
 
 type fakeSubConn struct {
 	balancer.SubConn
-	id string
+	id           string
+	connectCalls int
 }
 
-func (fakeSubConn) Connect() {}
+func (sc *fakeSubConn) Connect() { sc.connectCalls++ }
 
 func keys(members []hashring.Member) []string {
 	keys := make([]string, 0, len(members))
@@ -39,6 +40,8 @@ func keys(members []hashring.Member) []string {
 // behavior itself, see `pkg/consistent` for tests of the hashring.
 func TestConsistentHashringPickerPick(t *testing.T) {
 	// Override the intn function with one that uses a stable seed.
+	realIntn := intn
+	t.Cleanup(func() { intn = realIntn })
 	intn = func(n uint8) int {
 		h := new(maphash.Hash)
 
@@ -245,6 +248,40 @@ func TestConsistentHashringBalancerUpdateClientConnState(t *testing.T) {
 				{
 					ConnectivityState: connectivity.Ready,
 					memberKeys:        []string{"t1", "t2"},
+					spread:            1,
+				},
+			},
+		},
+		{
+			name: "existing hashring with 3 nodes, 2 removed",
+			s: []balancer.ClientConnState{{
+				ResolverState: resolver.State{
+					Addresses: []resolver.Address{
+						{ServerName: "t", Addr: "1"},
+						{ServerName: "t", Addr: "2"},
+						{ServerName: "t", Addr: "3"},
+					},
+				},
+				BalancerConfig: &BalancerConfig{
+					ReplicationFactor: 100,
+					Spread:            1,
+				},
+			}, {
+				ResolverState: resolver.State{
+					Addresses: []resolver.Address{
+						{ServerName: "t", Addr: "2"},
+					},
+				},
+			}},
+			expectedStates: []balancerState{
+				{
+					ConnectivityState: connectivity.Ready,
+					memberKeys:        []string{"t1", "t2", "t3"},
+					spread:            1,
+				},
+				{
+					ConnectivityState: connectivity.Ready,
+					memberKeys:        []string{"t2"},
 					spread:            1,
 				},
 			},

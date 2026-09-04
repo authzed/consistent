@@ -241,8 +241,18 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 		svcConfig := s.BalancerConfig.(*BalancerConfig)
 		if b.config == nil || svcConfig.ReplicationFactor != b.config.ReplicationFactor {
 			b.hashring = hashring.MustNew(b.hasher, svcConfig.ReplicationFactor)
-			b.config = svcConfig
+			// The new ring starts empty: put every READY SubConn back on it.
+			b.ringMembers = make(map[balancer.SubConn]struct{})
+			for sc, st := range b.scStates {
+				if st != connectivity.Ready {
+					continue
+				}
+				if err := b.addToRing(sc); err != nil {
+					return err
+				}
+			}
 		}
+		b.config = svcConfig
 	}
 
 	// if there's no hashring yet, the balancer hasn't yet parsed an initial

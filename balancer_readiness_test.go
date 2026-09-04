@@ -165,3 +165,140 @@ func TestRPCsAreNotStuckBehindAConnectingBackend(t *testing.T) {
 	}
 	require.NoError(t, err)
 }
+
+// readyBalancer returns a balancer whose SubConns for addrs are all READY,
+// with a buffered fake ClientConn so state pushes can be counted.
+func readyBalancer(t *testing.T, addrs ...resolver.Address) (*ringBalancer, *fakeClientConn) {
+	t.Helper()
+	cc := newFakeClientConn()
+	cc.stateCh = make(chan balancer.State, 64)
+	b := NewBuilder(xxhash.Sum64).Build(cc, balancer.BuildOptions{}).(*ringBalancer)
+	require.NoError(t, b.UpdateClientConnState(balancer.ClientConnState{
+		ResolverState:  resolver.State{Addresses: addrs},
+		BalancerConfig: &BalancerConfig{ReplicationFactor: 100, Spread: 1},
+	}))
+	for _, sci := range b.subConns.Values() {
+		sc := sci.(balancer.SubConn)
+		b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Connecting})
+		b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Ready})
+	}
+	return b, cc
+}
+
+func ringKeys(b *ringBalancer) []string {
+	return keys(b.hashring.Members())
+}
+
+func TestConnectingSubConnLeavesTheRing(t *testing.T) {
+	addr := resolver.Address{ServerName: "t", Addr: "1"}
+	b, _ := readyBalancer(t, addr)
+	sci, _ := b.subConns.Get(addr)
+	sc := sci.(balancer.SubConn)
+	require.Equal(t, []string{"t1"}, ringKeys(b))
+
+	b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Connecting})
+	require.Empty(t, ringKeys(b), "a reconnecting backend must not receive traffic")
+	require.Equal(t, connectivity.Connecting, b.state)
+}
+
+// After TRANSIENT_FAILURE, IDLE and CONNECTING reports are ignored so the
+// aggregate state does not flap, but an IDLE SubConn is still asked to
+// reconnect.
+func TestTransientFailureIgnoresReconnectTransitions(t *testing.T) {
+	addr := resolver.Address{ServerName: "t", Addr: "1"}
+	b, _ := readyBalancer(t, addr)
+	sci, _ := b.subConns.Get(addr)
+	sc := sci.(*fakeSubConn)
+	connectsSoFar := sc.connectCalls
+
+	b.UpdateSubConnState(sc, balancer.SubConnState{
+		ConnectivityState: connectivity.TransientFailure,
+		ConnectionError:   fmt.Errorf("refused"),
+	})
+	require.Equal(t, connectivity.TransientFailure, b.state)
+	require.Empty(t, ringKeys(b))
+
+	b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Connecting})
+	require.Equal(t, connectivity.TransientFailure, b.scStates[sc])
+	require.Equal(t, connectivity.TransientFailure, b.state)
+	require.Equal(t, connectsSoFar, sc.connectCalls, "CONNECTING must not trigger another Connect")
+
+	b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Idle})
+	require.Equal(t, connectivity.TransientFailure, b.scStates[sc])
+	require.Equal(t, connectivity.TransientFailure, b.state)
+	require.Equal(t, connectsSoFar+1, sc.connectCalls, "IDLE must trigger exactly one Connect")
+
+	b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Ready})
+	require.Equal(t, connectivity.Ready, b.state)
+	require.Equal(t, []string{"t1"}, ringKeys(b))
+}
+
+func TestResolverErrorOnlyPushesStateInTransientFailure(t *testing.T) {
+	b, cc := readyBalancer(t, resolver.Address{ServerName: "t", Addr: "1"})
+	for len(cc.stateCh) > 0 {
+		<-cc.stateCh
+	}
+
+	b.ResolverError(fmt.Errorf("dns down"))
+	require.Equal(t, connectivity.Ready, b.state)
+	require.Empty(t, cc.stateCh, "a healthy balancer keeps its picker on resolver errors")
+
+	// With no SubConns at all the error is surfaced through an error picker.
+	empty := NewBuilder(xxhash.Sum64).Build(newFakeClientConn(), balancer.BuildOptions{}).(*ringBalancer)
+	emptyCC := empty.cc.(*fakeClientConn)
+	emptyCC.stateCh = make(chan balancer.State, 1)
+	empty.ResolverError(fmt.Errorf("dns down"))
+	require.Equal(t, connectivity.TransientFailure, empty.state)
+	require.Len(t, emptyCC.stateCh, 1)
+	pushed := <-emptyCC.stateCh
+	require.Equal(t, connectivity.TransientFailure, pushed.ConnectivityState)
+	_, err := pushed.Picker.Pick(balancer.PickInfo{})
+	require.EqualError(t, err, "dns down")
+}
+
+func TestReplicationFactorChangeKeepsReadyMembers(t *testing.T) {
+	addrs := []resolver.Address{{ServerName: "t", Addr: "1"}, {ServerName: "t", Addr: "2"}}
+	b, _ := readyBalancer(t, addrs...)
+	before := b.hashring
+
+	require.NoError(t, b.UpdateClientConnState(balancer.ClientConnState{
+		ResolverState:  resolver.State{Addresses: addrs},
+		BalancerConfig: &BalancerConfig{ReplicationFactor: 7, Spread: 1},
+	}))
+	require.NotSame(t, before, b.hashring, "a new replication factor builds a new ring")
+	require.ElementsMatch(t, []string{"t1", "t2"}, ringKeys(b))
+
+	// Same factor: the ring is kept as is.
+	current := b.hashring
+	require.NoError(t, b.UpdateClientConnState(balancer.ClientConnState{
+		ResolverState:  resolver.State{Addresses: addrs},
+		BalancerConfig: &BalancerConfig{ReplicationFactor: 7, Spread: 2},
+	}))
+	require.Same(t, current, b.hashring)
+	require.Equal(t, uint8(2), b.picker.(*picker).spread)
+}
+
+func TestParseConfigDefaults(t *testing.T) {
+	bld := NewBuilder(xxhash.Sum64)
+
+	cfg, err := bld.ParseConfig([]byte(`{}`))
+	require.NoError(t, err)
+	require.Equal(t, &BalancerConfig{ReplicationFactor: DefaultReplicationFactor, Spread: DefaultSpread}, cfg)
+
+	cfg, err = bld.ParseConfig([]byte(`{"replicationFactor": 3, "spread": 2}`))
+	require.NoError(t, err)
+	require.Equal(t, &BalancerConfig{ReplicationFactor: 3, Spread: 2}, cfg)
+
+	_, err = bld.ParseConfig([]byte(`not json`))
+	require.Error(t, err)
+}
+
+func TestIntnStaysInRange(t *testing.T) {
+	for _, n := range []uint8{1, 2, 3, 7} {
+		for i := 0; i < 2000; i++ {
+			v := intn(n)
+			require.GreaterOrEqual(t, v, 0)
+			require.Less(t, v, int(n))
+		}
+	}
+}
