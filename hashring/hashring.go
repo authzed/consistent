@@ -6,14 +6,14 @@
 package hashring
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
-
-	"golang.org/x/exp/slices"
 )
 
 var (
@@ -239,24 +239,12 @@ type virtualNode struct {
 	members   nodeRecord
 }
 
-// compareUint64 should be replaced with the standard library's cmp.Compare once
-// Go 1.21 is released.
-func compareUint64(x, y uint64) int {
-	if x < y {
-		return -1
-	}
-	if x > y {
-		return +1
-	}
-	return 0
-}
-
 func cmpVnode(a, b virtualNode) int {
 	if a.hashvalue == b.hashvalue {
 		if a.members.hashvalue == b.members.hashvalue {
 			return strings.Compare(a.members.nodeKey, b.members.nodeKey)
 		}
-		return compareUint64(a.members.hashvalue, b.members.hashvalue)
+		return cmp.Compare(a.members.hashvalue, b.members.hashvalue)
 	}
-	return compareUint64(a.hashvalue, b.hashvalue)
+	return cmp.Compare(a.hashvalue, b.hashvalue)
 }
