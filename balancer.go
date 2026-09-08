@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
-	"sync"
 
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/balancer/base"
@@ -128,9 +127,7 @@ func (s subConnMember) Key() string { return s.key }
 var _ hashring.Member = (*subConnMember)(nil)
 
 type builder struct {
-	sync.Mutex
 	hashfn hashring.HashFunc
-	config BalancerConfig
 }
 
 // Builder combines both of gRPC's `balancer.Builder` and
@@ -175,10 +172,6 @@ func (b *builder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalancingCo
 	if lbCfg.Spread == 0 {
 		lbCfg.Spread = DefaultSpread
 	}
-
-	b.Lock()
-	b.config = lbCfg
-	b.Unlock()
 
 	return &lbCfg, nil
 }
