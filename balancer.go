@@ -185,7 +185,8 @@ type ringBalancer struct {
 	scStates map[balancer.SubConn]connectivity.State
 	// scKeys holds the hashring key of every SubConn the resolver gave us.
 	scKeys map[balancer.SubConn]string
-	// ringMembers is the set of SubConns on the hashring: only READY ones.
+	// ringMembers is the set of SubConns on the hashring: every SubConn the
+	// resolver gave us except those in TRANSIENT_FAILURE.
 	ringMembers map[balancer.SubConn]struct{}
 
 	config   *BalancerConfig
@@ -234,10 +235,11 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 		svcConfig := s.BalancerConfig.(*BalancerConfig)
 		if b.config == nil || svcConfig.ReplicationFactor != b.config.ReplicationFactor {
 			b.hashring = hashring.MustNew(b.hasher, svcConfig.ReplicationFactor)
-			// The new ring starts empty: put every READY SubConn back on it.
+			// The new ring starts empty: put every SubConn that has not
+			// failed back on it.
 			b.ringMembers = make(map[balancer.SubConn]struct{})
 			for sc, st := range b.scStates {
-				if st != connectivity.Ready {
+				if st == connectivity.TransientFailure {
 					continue
 				}
 				if err := b.addToRing(sc); err != nil {
@@ -282,6 +284,11 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 			b.scKeys[sc] = addr.ServerName + addr.Addr
 			b.csEvltr.RecordTransition(connectivity.Shutdown, connectivity.Idle)
 			sc.Connect()
+			// The backend owns its keys from the start: its connection is
+			// already on the way, and RPCs picked before READY wait for it.
+			if err := b.addToRing(sc); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -399,13 +406,16 @@ func (b *ringBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.Su
 
 	b.scStates[sc] = s
 
-	// A backend only receives traffic while its connection is READY. Keys
-	// hashed to a backend that is connecting or failed move to the closest
-	// ready member instead of waiting on a connection that may never come.
+	// Ring membership changes on failure, not on every state change. IDLE
+	// and CONNECTING backends keep their keys: those states normally resolve
+	// quickly, and a remap on each one would move keys across the fleet on
+	// every connection recycle. A backend whose connection attempt failed
+	// leaves the ring, and its keys move to the closest remaining member.
 	var ringErr error
-	if s == connectivity.Ready {
+	switch s {
+	case connectivity.Ready:
 		ringErr = b.addToRing(sc)
-	} else {
+	case connectivity.TransientFailure, connectivity.Shutdown:
 		ringErr = b.removeFromRing(sc)
 	}
 	if ringErr != nil {
@@ -453,10 +463,11 @@ var _ balancer.Picker = (*picker)(nil)
 // The value stored in CtxKey is hashed into the hashring, and the resulting
 // subconnection is used.
 //
-// The hashring only contains READY subconnections, so a key whose closest
-// backend is down is served by the next closest ready backend. When no
-// backend is ready the RPC is queued until one becomes ready (or the
-// balancer reports TRANSIENT_FAILURE and installs an error picker).
+// The hashring contains every resolver-provided backend except those in
+// TRANSIENT_FAILURE. The next closest member serves the keys of a failed
+// backend. A key whose backend is IDLE or CONNECTING waits for that
+// connection. The dial timeout (MinConnectTimeout) bounds the wait: when
+// the dial fails, the backend leaves the ring and its keys move.
 //
 // Spread can be increased to be robust against single node availability
 // problems. If spread is greater than 1, a random selection is made from the
