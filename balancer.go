@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/maphash"
+	"sync"
 
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/balancer/base"
@@ -112,7 +113,10 @@ var logger = grpclog.Component("consistenthashring")
 // balancer.Register(consistent.NewBuilder(xxhash.Sum64))
 // ```
 func NewBuilder(hashfn hashring.HashFunc) Builder {
-	return &builder{hashfn: hashfn}
+	return &builder{
+		hashfn: hashfn,
+		slots:  make(map[string]*ringSlot),
+	}
 }
 
 type subConnMember struct {
@@ -128,20 +132,53 @@ var _ hashring.Member = (*subConnMember)(nil)
 
 type builder struct {
 	hashfn hashring.HashFunc
+
+	mu    sync.Mutex
+	slots map[string]*ringSlot
 }
 
-// Builder combines both of gRPC's `balancer.Builder` and
-// `balancer.ConfigParser` interfaces.
+// Builder combines gRPC's `balancer.Builder` and `balancer.ConfigParser`
+// interfaces. It also exposes read-only views of the hashrings of the
+// balancers it builds.
 type Builder interface {
 	balancer.Builder
 	balancer.ConfigParser
+
+	// RingFor returns a read-only view of the live hashring that routes
+	// requests to the given target. The target is the string form of the
+	// dial target, for example "kubernetes:///spicedb.default:50053".
+	//
+	// The returned view is always non-nil, and callers can get it before any
+	// balancer for the target exists. Its methods return ErrNoRing (or no
+	// members) until the balancer produces a ring. ClientConns that share a
+	// target string share one view, and the last writer wins.
+	RingFor(target string) RingView
 }
 
 var _ Builder = (*builder)(nil)
 
 func (b *builder) Name() string { return BalancerName }
 
-func (b *builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balancer.Balancer {
+// slotFor returns the ringSlot for the given target. It creates the slot if
+// none exists.
+func (b *builder) slotFor(target string) *ringSlot {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	slot, ok := b.slots[target]
+	if !ok {
+		slot = &ringSlot{}
+		b.slots[target] = slot
+	}
+
+	return slot
+}
+
+func (b *builder) RingFor(target string) RingView {
+	return b.slotFor(target)
+}
+
+func (b *builder) Build(cc balancer.ClientConn, opts balancer.BuildOptions) balancer.Balancer {
 	bal := &ringBalancer{
 		cc:          cc,
 		subConns:    resolver.NewAddressMapV2[any](),
@@ -152,6 +189,7 @@ func (b *builder) Build(cc balancer.ClientConn, _ balancer.BuildOptions) balance
 		state:       connectivity.Connecting,
 		hasher:      b.hashfn,
 		picker:      base.NewErrPicker(balancer.ErrNoSubConnAvailable),
+		slot:        b.slotFor(opts.Target.String()),
 	}
 
 	return bal
@@ -191,6 +229,9 @@ type ringBalancer struct {
 	config   *BalancerConfig
 	hashring *hashring.Ring
 	hasher   hashring.HashFunc
+	// slot is where the balancer publishes its live ring for RingView
+	// readers.
+	slot *ringSlot
 
 	resolverErr error // the last error reported by the resolver; cleared on successful resolution
 	connErr     error // the last connection error; cleared upon leaving TransientFailure
@@ -234,6 +275,7 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 		svcConfig := s.BalancerConfig.(*BalancerConfig)
 		if b.config == nil || svcConfig.ReplicationFactor != b.config.ReplicationFactor {
 			b.hashring = hashring.MustNew(b.hasher, svcConfig.ReplicationFactor)
+			b.slot.ring.Store(b.hashring)
 			// The new ring starts empty: put every READY SubConn back on it.
 			b.ringMembers = make(map[balancer.SubConn]struct{})
 			for sc, st := range b.scStates {
@@ -432,7 +474,11 @@ func (b *ringBalancer) UpdateSubConnState(sc balancer.SubConn, state balancer.Su
 }
 
 func (b *ringBalancer) Close() {
-	// No internal state to clean up and no need to call RemoveSubConn.
+	// Withdraw the published ring so that RingView readers stop routing to a
+	// balancer that no longer exists. The CompareAndSwap clears only this
+	// balancer's own ring, so it cannot remove the ring of a second balancer
+	// that shares the target's slot.
+	b.slot.ring.CompareAndSwap(b.hashring, nil)
 }
 
 func (b *ringBalancer) ExitIdle() {
