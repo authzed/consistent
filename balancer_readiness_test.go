@@ -10,6 +10,7 @@ import (
 	"github.com/cespare/xxhash/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/balancer"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/connectivity"
@@ -39,10 +40,10 @@ func keyHashingTo(t *testing.T, ring *hashring.Ring, memberKey string) []byte {
 	return nil
 }
 
-// TestPickerSkipsSubConnsThatAreNotReady drives the balancer directly: two
-// backends come up, then one fails. Keys that hashed to the failed backend
-// must be picked on the remaining ready one instead of a dead SubConn.
-func TestPickerSkipsSubConnsThatAreNotReady(t *testing.T) {
+// TestPickerSkipsFailedSubConns drives the balancer directly: two backends
+// become READY, then one fails. Keys that hashed to the failed backend must
+// move to the remaining ready one instead of a dead SubConn.
+func TestPickerSkipsFailedSubConns(t *testing.T) {
 	cc := newFakeClientConn()
 	// Drain state updates so the balancer never blocks on the fake conn.
 	go func() {
@@ -96,11 +97,14 @@ func TestPickerSkipsSubConnsThatAreNotReady(t *testing.T) {
 	require.Same(t, sc2, pick(keyFor2), "key returns to backend 2 once it is ready")
 }
 
-// TestRPCsAreNotStuckBehindAConnectingBackend reproduces a peer whose address
-// is still resolvable but never completes a connection (a killed pod whose IP
-// is still in the endpoint list). RPCs hashed to it must be served by the
-// healthy backend instead of waiting for the dial to time out.
-func TestRPCsAreNotStuckBehindAConnectingBackend(t *testing.T) {
+// TestRPCsFailOverAfterConnectTimeout reproduces a peer whose address is
+// still resolvable but never completes a connection (a killed pod whose IP
+// is still in the endpoint list). The backend keeps its keys while it is
+// CONNECTING. When the dial times out (MinConnectTimeout), the backend
+// moves to TRANSIENT_FAILURE and leaves the ring, and the healthy backend
+// serves its keys. The failover window is therefore bounded by
+// MinConnectTimeout, which the dialer can set.
+func TestRPCsFailOverAfterConnectTimeout(t *testing.T) {
 	// Healthy backend: a real gRPC server with the health service.
 	healthyLis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
@@ -110,7 +114,7 @@ func TestRPCsAreNotStuckBehindAConnectingBackend(t *testing.T) {
 	t.Cleanup(srv.Stop)
 
 	// Black hole: accepts TCP connections but never speaks HTTP/2, so the
-	// SubConn stays CONNECTING until gRPC's 20s connect timeout.
+	// SubConn stays CONNECTING until the connect timeout set below.
 	blackholeLis, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = blackholeLis.Close() })
@@ -135,6 +139,10 @@ func TestRPCsAreNotStuckBehindAConnectingBackend(t *testing.T) {
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
 		grpc.WithResolvers(rb),
 		grpc.WithDefaultServiceConfig(svcConfig),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			MinConnectTimeout: 300 * time.Millisecond,
+			Backoff:           backoff.DefaultConfig,
+		}),
 	)
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = conn.Close() })
@@ -158,10 +166,12 @@ func TestRPCsAreNotStuckBehindAConnectingBackend(t *testing.T) {
 	// Warm up: the healthy backend is reachable and connected.
 	require.NoError(t, check(keyForHealthy, 5*time.Second))
 
-	// A key hashed to the black-holed backend must still be answered promptly.
-	err = check(keyForBlackhole, 3*time.Second)
+	// A key hashed to the black-holed backend waits for the dial, fails over
+	// when the dial times out at ~300ms, and succeeds well inside the
+	// deadline.
+	err = check(keyForBlackhole, 5*time.Second)
 	if st, ok := status.FromError(err); ok && st.Code() == codes.DeadlineExceeded {
-		t.Fatalf("RPC hung behind a CONNECTING backend instead of being served by the ready one: %v", err)
+		t.Fatalf("RPC hung behind a black-holed backend instead of failing over after the connect timeout: %v", err)
 	}
 	require.NoError(t, err)
 }
@@ -189,7 +199,10 @@ func ringKeys(b *ringBalancer) []string {
 	return keys(b.hashring.Members())
 }
 
-func TestConnectingSubConnLeavesTheRing(t *testing.T) {
+// A reconnecting backend keeps its ring membership. CONNECTING normally
+// resolves in milliseconds, and a remap on every reconnect would move the
+// member's keys across the fleet each time.
+func TestConnectingSubConnKeepsRingMembership(t *testing.T) {
 	addr := resolver.Address{ServerName: "t", Addr: "1"}
 	b, _ := readyBalancer(t, addr)
 	sci, _ := b.subConns.Get(addr)
@@ -197,7 +210,7 @@ func TestConnectingSubConnLeavesTheRing(t *testing.T) {
 	require.Equal(t, []string{"t1"}, ringKeys(b))
 
 	b.UpdateSubConnState(sc, balancer.SubConnState{ConnectivityState: connectivity.Connecting})
-	require.Empty(t, ringKeys(b), "a reconnecting backend must not receive traffic")
+	require.Equal(t, []string{"t1"}, ringKeys(b), "a reconnecting backend must keep its keys")
 	require.Equal(t, connectivity.Connecting, b.state)
 }
 
