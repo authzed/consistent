@@ -41,6 +41,15 @@ const (
 	// The value stored at this key must be []byte.
 	CtxKey ctxKey = "requestKey"
 
+	// SpreadCtxKey is an optional key in a gRPC request's context. When
+	// present, its value overrides the balancer config's spread for that
+	// request. This lets a caller widen the set of candidate backends for
+	// one key, for example to spread a measured-hot key across more members.
+	//
+	// The value stored at this key must be uint8. The picker ignores a value
+	// of zero or of any other type and uses the config's spread.
+	SpreadCtxKey ctxKey = "requestSpread"
+
 	// DefaultReplicationFactor is the value that will be used when parsing a
 	// service config provides an invalid value.
 	DefaultReplicationFactor = 100
@@ -464,15 +473,25 @@ var _ balancer.Picker = (*picker)(nil)
 func (p *picker) Pick(info balancer.PickInfo) (balancer.PickResult, error) {
 	key := info.Ctx.Value(CtxKey).([]byte)
 
+	spread := p.spread
+	if override, ok := info.Ctx.Value(SpreadCtxKey).(uint8); ok && override > 0 {
+		spread = override
+	}
+
 	// FindN only fails with hashring.ErrNotEnoughMembers.
-	members, err := p.hashring.FindN(key, p.spread)
+	members, err := p.hashring.FindN(key, spread)
 	if err != nil {
-		// Fewer ready backends than the configured spread: use those that are.
-		members, err = p.hashring.FindN(key, 1)
+		// The ring has fewer ready backends than the requested spread: use
+		// all of them. The count fits in uint8 because it is smaller than
+		// spread here.
+		members, err = p.hashring.FindN(key, uint8(len(p.hashring.Members())))
 		if err != nil {
-			// No ready backends at all: queue the RPC until one is ready.
 			return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
 		}
+	}
+	if len(members) == 0 {
+		// No backends are ready: queue the RPC until one is ready.
+		return balancer.PickResult{}, balancer.ErrNoSubConnAvailable
 	}
 
 	index := 0
