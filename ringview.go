@@ -37,7 +37,13 @@ type RingView interface {
 // balancer swaps the pointer when it replaces the ring and clears the
 // pointer on Close.
 type ringSlot struct {
-	ring atomic.Pointer[hashring.Ring]
+	ring atomic.Pointer[publishedRing]
+}
+
+// publishedRing boxes a memberSet so that ringSlot can hold either
+// implementation behind an atomic pointer.
+type publishedRing struct {
+	memberSet
 }
 
 var _ RingView = (*ringSlot)(nil)
