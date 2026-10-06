@@ -26,6 +26,7 @@ import (
 	"google.golang.org/grpc/serviceconfig"
 
 	"github.com/authzed/consistent/hashring"
+	"github.com/authzed/consistent/rendezvous"
 )
 
 type ctxKey string
@@ -49,6 +50,14 @@ const (
 	// DefaultSpread is the value that will be used when parsing a service
 	// config provides an invalid value.
 	DefaultSpread = 1
+
+	// AlgorithmHashring places backends on a consistent hashring with
+	// ReplicationFactor virtual nodes each. This is the default.
+	AlgorithmHashring = "hashring"
+
+	// AlgorithmRendezvous selects backends with rendezvous (highest random
+	// weight) hashing. It ignores ReplicationFactor.
+	AlgorithmRendezvous = "rendezvous"
 )
 
 // DefaultServiceConfigJSON is a helper to easily leverage the defaults.
@@ -73,6 +82,46 @@ type BalancerConfig struct {
 	serviceconfig.LoadBalancingConfig `json:"-"`
 	ReplicationFactor                 uint16 `json:"replicationFactor,omitempty"`
 	Spread                            uint8  `json:"spread,omitempty"`
+	// Algorithm is AlgorithmHashring or AlgorithmRendezvous. Empty means
+	// AlgorithmHashring.
+	Algorithm string `json:"algorithm,omitempty"`
+}
+
+func (c *BalancerConfig) algorithm() string {
+	if c.Algorithm == "" {
+		return AlgorithmHashring
+	}
+	return c.Algorithm
+}
+
+// needsNewMemberSet reports whether moving from the old config to the new one
+// requires building a new member set.
+func needsNewMemberSet(old, updated *BalancerConfig) bool {
+	if old == nil || old.algorithm() != updated.algorithm() {
+		return true
+	}
+	return updated.algorithm() == AlgorithmHashring && old.ReplicationFactor != updated.ReplicationFactor
+}
+
+// memberSet is the structure a balancer places its backends on. Both
+// hashring.Ring and rendezvous.Set implement it.
+type memberSet interface {
+	Add(hashring.Member) error
+	Remove(hashring.Member) error
+	FindN(key []byte, num uint8) ([]hashring.Member, error)
+	Members() []hashring.Member
+}
+
+var (
+	_ memberSet = (*hashring.Ring)(nil)
+	_ memberSet = (*rendezvous.Set)(nil)
+)
+
+func newMemberSet(hashfn hashring.HashFunc, cfg *BalancerConfig) memberSet {
+	if cfg.algorithm() == AlgorithmRendezvous {
+		return rendezvous.New(hashfn)
+	}
+	return hashring.MustNew(hashfn, cfg.ReplicationFactor)
 }
 
 // ServiceConfigJSON encodes the current config into the gRPC Service Config
@@ -211,6 +260,12 @@ func (b *builder) ParseConfig(js json.RawMessage) (serviceconfig.LoadBalancingCo
 		lbCfg.Spread = DefaultSpread
 	}
 
+	switch lbCfg.Algorithm {
+	case "", AlgorithmHashring, AlgorithmRendezvous:
+	default:
+		return nil, fmt.Errorf("consistent-hashring: unknown algorithm %q", lbCfg.Algorithm)
+	}
+
 	return &lbCfg, nil
 }
 
@@ -228,11 +283,14 @@ type ringBalancer struct {
 	ringMembers map[balancer.SubConn]struct{}
 
 	config   *BalancerConfig
-	hashring *hashring.Ring
+	hashring memberSet
 	hasher   hashring.HashFunc
 	// slot is where the balancer publishes its live ring for RingView
 	// readers.
 	slot *ringSlot
+	// published is the entry this balancer stored in slot, so that Close
+	// withdraws only its own ring.
+	published *publishedRing
 
 	resolverErr error // the last error reported by the resolver; cleared on successful resolution
 	connErr     error // the last connection error; cleared upon leaving TransientFailure
@@ -274,9 +332,10 @@ func (b *ringBalancer) UpdateClientConnState(s balancer.ClientConnState) error {
 	// update the service config if it has changed
 	if s.BalancerConfig != nil {
 		svcConfig := s.BalancerConfig.(*BalancerConfig)
-		if b.config == nil || svcConfig.ReplicationFactor != b.config.ReplicationFactor {
-			b.hashring = hashring.MustNew(b.hasher, svcConfig.ReplicationFactor)
-			b.slot.ring.Store(b.hashring)
+		if needsNewMemberSet(b.config, svcConfig) {
+			b.hashring = newMemberSet(b.hasher, svcConfig)
+			b.published = &publishedRing{b.hashring}
+			b.slot.ring.Store(b.published)
 			// The new ring starts empty: put every SubConn that has not
 			// failed back on it.
 			b.ringMembers = make(map[balancer.SubConn]struct{})
@@ -488,7 +547,7 @@ func (b *ringBalancer) Close() {
 	// balancer that no longer exists. The CompareAndSwap clears only this
 	// balancer's own ring, so it cannot remove the ring of a second balancer
 	// that shares the target's slot.
-	b.slot.ring.CompareAndSwap(b.hashring, nil)
+	b.slot.ring.CompareAndSwap(b.published, nil)
 }
 
 func (b *ringBalancer) ExitIdle() {
@@ -498,7 +557,7 @@ func (b *ringBalancer) ExitIdle() {
 }
 
 type picker struct {
-	hashring *hashring.Ring
+	hashring memberSet
 	spread   uint8
 }
 

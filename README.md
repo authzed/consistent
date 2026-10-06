@@ -23,6 +23,19 @@ balancer.Register(consistent.NewBuilder(xxhash.Sum64))
 grpc.Dial(addr, grpc.WithDefaultServiceConfig(consistent.DefaultServiceConfigJSON))
 ```
 
+### Choosing an algorithm
+
+By default, backends are placed on a consistent hashring with `ReplicationFactor` virtual nodes each.
+Setting `Algorithm` to `consistent.AlgorithmRendezvous` uses rendezvous (highest random weight) hashing instead:
+
+```go
+cfg := &consistent.BalancerConfig{Spread: 1, Algorithm: consistent.AlgorithmRendezvous}
+grpc.Dial(addr, grpc.WithDefaultServiceConfig(cfg.MustServiceConfigJSON()))
+```
+
+Rendezvous hashing spreads keys more evenly and makes membership changes far cheaper, at the cost of lookups that scale linearly with the number of backends.
+See `go test ./rendezvous -run TestCompareDistribution -v` and `go test ./rendezvous -run '^$' -bench .` for a comparison.
+
 ## Acknowledgements
 
 This project is a community effort fueled by contributions from both organizations and individuals.
